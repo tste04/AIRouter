@@ -1,9 +1,13 @@
 # AIRouter
 
-Standalone Swift-Package des `AIRouter` aus dem UserCockpit-Projekt. Ein
-zentraler Router, der KI-Aufgaben anhand von **Energiemodus**, **Routing-Policy**
-und **Token-Budget** auf Cloud-Modelle (Vertex AI: Anthropic & Google) oder
-lokale Modelle (In-Process-Provider oder Ollama-HTTP) verteilt.
+Ein eigenständiges Swift-Package mit einem zentralen Router, der KI-Aufgaben
+anhand von **Energiemodus**, **Routing-Policy** und **Token-Budget** auf
+Cloud-Modelle (Vertex AI: Anthropic & Google) oder lokale Modelle
+(In-Process-Provider oder Ollama-HTTP) verteilt.
+
+Plug-and-play: keine Auth-Strategie und kein Cloud-Projekt sind fest verdrahtet —
+Authentifizierung, lokales Backend und Modell-/Routing-Konfiguration werden
+vollständig von außen injiziert.
 
 ## Use Case
 
@@ -14,45 +18,45 @@ Call-Site das wissen muss.
 
 Besonders stark bei:
 
-- **Hybrid lokal/Cloud** — Apple Silicon + MLX/Ollama als Sparmodus, Vertex als Qualitätsmodus.
+- **Hybrid lokal/Cloud** — On-Device-Modell/Ollama als Sparmodus, Vertex als Qualitätsmodus.
 - **Laptop-/Akku-Szenarien** — `powerSave` und `offline` schalten automatisch um.
 - **Kostenkontrolle** — stündliches Token-Budget mit prioritätsbasiertem Throttling.
 - **Viele heterogene KI-Aufgaben** in einer App mit unterschiedlichen Qualitätsstufen.
 
 Weniger geeignet: einfache „1 App, 1 Modell, 1 Provider"-Fälle (Overkill) sowie
-Multi-Provider-Setups außerhalb von Google Cloud (siehe *Grenzen* unten).
+Multi-Provider-Setups außerhalb von Google Cloud Vertex AI (siehe *Grenzen* unten).
 
 ## Key-Funktionalitäten
 
 | Bereich | Funktion |
 | --- | --- |
-| **Aufgaben-Routing** | `send(task:system:user:)` wählt Modell anhand `AITask` (30 vordefinierte Aufgaben mit Default-Modell, Token-Budget, Priorität, Policy). |
+| **Aufgaben-Routing** | `send(task:system:user:)` wählt Modell anhand `AITask` (vordefinierte Aufgaben mit Default-Modell, Token-Budget, Priorität, Policy). |
 | **Energiemodi** | `setEnergyMode(_:)` — `maxCloud`, `fullPower`, `offline`, `powerSave` steuern Cloud-vs-Lokal-Verhalten global. |
 | **Routing-Policies** | Pro Aufgabe `cloudOnly` / `preferCloud` / `preferLocal` / `localOnly`, überschreibbar via `taskRoutingPolicies`. |
 | **Cloud ↔ Lokal-Fallback** | Automatischer Wechsel bei Fehlern oder erschöpftem Budget. |
 | **Vertex AI** | Anthropic (`:rawPredict`) und Google (`:generateContent`); Modell-Fallback bei HTTP 404, Token-Refresh bei HTTP 401, Retry mit Backoff. |
-| **Lokale Inferenz** | `LocalInferenceProvider`-Protokoll (z. B. MLX) **oder** Ollama (`/api/chat`), mit Auto-Erkennung installierter Ollama-Modelle. |
+| **Lokale Inferenz** | `LocalInferenceProvider`-Protokoll (eigenes On-Device-Modell) **oder** Ollama (`/api/chat`), mit Auto-Erkennung installierter Ollama-Modelle. |
 | **Streaming** | `sendStreaming(task:…)` liefert Token-weise (In-Process, Ollama-NDJSON, oder Fallback auf Vollantwort). |
 | **Token-Budget** | `setHourlyBudget(_:)` + `budgetStatus()`; Throttling nach Priorität (critical umgeht Budget). |
 | **Telemetrie** | `setUsageCallback(_:)` liefert `AIUsageInfo` (Modell, Tokens, Dauer) pro Aufruf. |
-| **Austauschbare Auth** | `accessTokenProvider`-Closure; Default `gcloud auth application-default print-access-token`. |
+| **Injizierbare Auth** | `accessTokenProvider`-Closure; keine Auth-Strategie ist fest verdrahtet. |
 | **Logging** | `DebugLog` über `os.Logger`, optional in Datei (`DebugLog.configure(filePath:)`). |
 
 ## Grenzen (noch nicht universell)
 
-Der Router ist **generisch in der Routing-Mechanik**, aber in den Inhalten auf
-UserCockpit zugeschnitten:
+Der Router ist **generisch in der Routing-Mechanik**, in den Inhalten aber auf
+einige Annahmen festgelegt:
 
-- **Nur Vertex AI** als Cloud-Provider — OpenAI, Azure, Anthropic-direkt oder Mistral
-  erfordern aktuell Code-Änderungen.
-- **`AITask` ist projektspezifisch** — 30 feste Aufgaben mit deutschen `displayName`s.
-- **Modellnamen hartkodiert** (`claude-opus-4-6`, `gemini-2.5-flash` …) in `defaultModel`,
-  `upgradeModel`, `fallbackModel`.
-- **Default-Auth** nutzt einen `gcloud`-Shell-Aufruf (macOS-spezifisch).
+- **Nur Vertex AI** als Cloud-Transport — OpenAI, Azure, Anthropic-direkt oder
+  Mistral erfordern aktuell Code-Änderungen.
+- **`AITask` ist ein festes Enum** mit vordefinierten Aufgaben und deutschen
+  `displayName`s.
+- **Modellnamen sind im Code hinterlegt** (in `defaultModel`, `upgradeModel`,
+  `fallbackModel`) — Overrides sind über `taskModels` möglich.
 
-Für volle Projektunabhängigkeit: `AITask` zu konfigurierbaren Profilen machen, Vertex
-hinter ein `CloudInferenceProvider`-Protokoll ziehen und Modell-/Fallback-Ketten aus
-Daten statt `switch`-Statements speisen.
+Für volle Provider-Unabhängigkeit: `AITask` zu konfigurierbaren Profilen machen,
+Vertex hinter ein `CloudInferenceProvider`-Protokoll ziehen und Modell-/
+Fallback-Ketten aus Daten statt `switch`-Statements speisen.
 
 ## Features
 
@@ -63,7 +67,7 @@ Daten statt `switch`-Statements speisen.
   `localOnly` — inkl. automatischem Fallback Cloud ↔ Lokal.
 - **Vertex AI** für Anthropic (`:rawPredict`) und Google (`:generateContent`),
   inkl. Modell-Fallback bei HTTP 404 und Token-Refresh bei HTTP 401.
-- **Lokale Inferenz** über das `LocalInferenceProvider`-Protokoll (z. B. MLX) oder
+- **Lokale Inferenz** über das `LocalInferenceProvider`-Protokoll oder
   per Ollama (`/api/chat`, NDJSON-Streaming).
 - **Streaming** via `sendStreaming(task:…)`.
 - **Stündliches Token-Budget** mit prioritätsbasiertem Throttling.
@@ -80,7 +84,7 @@ In `Package.swift`:
 oder als Git-Abhängigkeit:
 
 ```swift
-.package(url: "<repo-url>", from: "1.0.0")
+.package(url: "https://github.com/rdtste/AIRouter.git", from: "1.0.0")
 ```
 
 und im Target:
@@ -95,8 +99,12 @@ und im Target:
 import AIRouter
 
 let router = AIRouter(
-    vertexRegion: "us-central1",
-    vertexProject: "mein-gcp-projekt"
+    vertexRegion: "<deine-region>",
+    vertexProject: "<dein-projekt>",
+    accessTokenProvider: {
+        // dein OAuth2-Token fuer Vertex AI (siehe "Authentifizierung")
+        try await tokenSource.fetchAccessToken()
+    }
 )
 
 await router.setEnergyMode(.fullPower)
@@ -106,8 +114,8 @@ await router.configureLocalLLM(endpoint: "http://localhost:11434", model: "")
 
 let antwort = try await router.send(
     task: .meetingSummary,
-    system: "Du bist ein praeziser Meeting-Zusammenfasser.",
-    user: "Transkript: …"
+    system: "Du bist ein praeziser Zusammenfasser.",
+    user: "Eingabetext: …"
 )
 ```
 
@@ -123,22 +131,29 @@ for try await chunk in router.sendStreaming(task: .advisorRealtime,
 
 ## Authentifizierung gegen Vertex AI
 
-Standardmäßig holt der Router ein OAuth2-Token via
-`gcloud auth application-default print-access-token`. Eigene Token-Quelle
-injizieren:
+Der Router enthält **bewusst keine** eingebaute Auth-Logik. Cloud-Aufrufe
+benötigen einen `accessTokenProvider`, der ein gültiges OAuth2-Token liefert.
+Die Token-Quelle ist frei wählbar — z. B. ein Service-Account, ein
+Metadata-Server, ein eigener Token-Cache oder ein CLI-Aufruf in deiner App.
 
 ```swift
 let router = AIRouter(
-    vertexRegion: "us-central1",
-    vertexProject: "mein-gcp-projekt",
+    vertexRegion: "<deine-region>",
+    vertexProject: "<dein-projekt>",
     accessTokenProvider: {
-        // z. B. aus einem Service-Account / Metadata-Server
         try await meinTokenProvider.fetch()
     }
 )
 ```
 
-## Eigener In-Process-Provider (statt MLX)
+Ohne `accessTokenProvider` schlagen Cloud-Aufrufe mit `AIRouterError.notConfigured`
+fehl. Rein lokale Nutzung (Ollama / `LocalInferenceProvider`) funktioniert ohne
+Token-Provider.
+
+## Eigener In-Process-Provider
+
+Für On-Device-Inferenz ein beliebiges lokales Sprachmodell hinter dem Protokoll
+`LocalInferenceProvider` einbinden:
 
 ```swift
 struct MyLocalLLM: LocalInferenceProvider {
@@ -171,12 +186,12 @@ let status = await router.budgetStatus()
 print("Genutzt: \(status.tokensUsed)/\(status.tokenBudget) (\(Int(status.utilization * 100))%)")
 ```
 
-## Unterschiede zur eingebetteten UserCockpit-Variante
+## Unterschiede zur eingebetteten Variante
 
-- `MLXModelManager` ist durch das Protokoll `LocalInferenceProvider` ersetzt — keine
-  harte MLX-Abhängigkeit, der Router bleibt eigenständig kompilierbar.
-- Die Vertex-Authentifizierung ist über `accessTokenProvider` austauschbar
-  (Default weiterhin `gcloud`).
+- Die lokale In-Process-Inferenz ist durch das Protokoll `LocalInferenceProvider`
+  abstrahiert — keine harte Abhängigkeit zu einem konkreten Inferenz-Framework.
+- Die Vertex-Authentifizierung wird ausschließlich über `accessTokenProvider`
+  injiziert; es ist keine Auth-Strategie fest verdrahtet.
 - Alle relevanten Typen sind `public`.
 
 ## Anforderungen

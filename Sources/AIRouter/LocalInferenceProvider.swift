@@ -1,12 +1,11 @@
 import Foundation
 
-/// Abstraktion fuer einen In-Process-Anbieter lokaler Inferenz (z. B. MLX auf
-/// Apple Silicon). Der ``AIRouter`` bevorzugt einen konfigurierten Provider vor
-/// dem Ollama-HTTP-Pfad.
+/// Abstraktion fuer einen In-Process-Anbieter lokaler Inferenz (z. B. ein
+/// On-Device-Sprachmodell). Der ``AIRouter`` bevorzugt einen konfigurierten
+/// Provider vor dem Ollama-HTTP-Pfad.
 ///
-/// Im urspruenglichen UserCockpit war dies der `MLXModelManager`. Durch die
-/// Protokoll-Abstraktion bleibt der Router standalone und ohne harte
-/// MLX-Abhaengigkeit nutzbar.
+/// Durch die Protokoll-Abstraktion bleibt der Router standalone und ohne harte
+/// Abhaengigkeit zu einem konkreten Inferenz-Framework nutzbar.
 public protocol LocalInferenceProvider: Sendable {
     /// Ob ein Modell geladen und einsatzbereit ist.
     var isReady: Bool { get async }

@@ -23,10 +23,11 @@ public struct AIUsageInfo: Sendable {
 /// Token-Budget auf Cloud-Modelle (Vertex AI: Anthropic/Google) oder lokale
 /// Modelle (In-Process-Provider oder Ollama-HTTP) verteilt.
 ///
-/// Standalone-Variante des urspruenglichen UserCockpit-`AIRouter`:
+/// Standalone, projektunabhaengig:
 /// - Die lokale In-Process-Inferenz ist hinter ``LocalInferenceProvider`` abstrahiert.
-/// - Die Vertex-Authentifizierung ist ueber einen injizierbaren Token-Provider
-///   austauschbar (Default: `gcloud auth application-default print-access-token`).
+/// - Die Vertex-Authentifizierung wird ausschliesslich ueber den injizierbaren
+///   ``AccessTokenProvider`` bereitgestellt. Es ist keine Auth-Strategie fest
+///   verdrahtet.
 public actor AIRouter {
     /// Liefert einen OAuth2-Access-Token fuer Vertex AI.
     public typealias AccessTokenProvider = @Sendable () async throws -> String
@@ -67,7 +68,9 @@ public actor AIRouter {
     ///   - vertexProject: GCP-Projekt-ID.
     ///   - taskModels: Optionale Modell-Overrides pro Task (`AITask.rawValue` -> Modellname).
     ///   - taskRoutingPolicies: Optionale Policy-Overrides pro Task (`AITask.rawValue` -> `RoutingPolicy.rawValue`).
-    ///   - accessTokenProvider: Optionaler Token-Provider. `nil` nutzt `gcloud`.
+    ///   - accessTokenProvider: Liefert das OAuth2-Token fuer Vertex AI. Wird fuer
+    ///     Cloud-Aufrufe benoetigt; `nil` ist nur fuer reine Lokal-Nutzung (Ollama/
+    ///     LocalInferenceProvider) zulaessig.
     public init(
         vertexRegion: String,
         vertexProject: String,
@@ -107,7 +110,7 @@ public actor AIRouter {
         }
     }
 
-    /// Konfiguriert einen In-Process-Anbieter lokaler Inferenz (z. B. MLX).
+    /// Konfiguriert einen In-Process-Anbieter lokaler Inferenz.
     public func configureLocalProvider(_ provider: LocalInferenceProvider) {
         self.localProvider = provider
         DebugLog.write("[AIRouter] LocalInferenceProvider konfiguriert")
@@ -211,7 +214,7 @@ public actor AIRouter {
                 let baseTokens = maxTokens ?? task.defaultMaxTokens
                 let tokens = self.energyMode == .maxCloud ? Int((Double(baseTokens) * 1.5 / 100).rounded() * 100) : baseTokens
 
-                // In-Process-Provider streamt direkt (schnellster Pfad auf Apple Silicon).
+                // In-Process-Provider streamt direkt (schnellster lokaler Pfad).
                 if let provider = self.localProvider, await provider.isReady {
                     do {
                         try await self.streamLocalProvider(provider: provider, system: system, user: user, maxTokens: tokens, continuation: continuation)
@@ -680,46 +683,14 @@ public actor AIRouter {
             return token
         }
 
-        let token: String
-        if let provider = accessTokenProvider {
-            token = try await provider()
-        } else {
-            token = try await Self.gcloudAccessToken()
+        guard let provider = accessTokenProvider else {
+            throw AIRouterError.notConfigured("Kein accessTokenProvider gesetzt. Uebergib im Initializer einen accessTokenProvider, um Cloud-Aufrufe zu authentifizieren.")
         }
 
+        let token = try await provider()
         guard !token.isEmpty else { throw AIRouterError.authFailed }
         cacheToken(token)
         return token
-    }
-
-    /// Standard-Token-Provider: ruft `gcloud auth application-default print-access-token` auf.
-    private static func gcloudAccessToken() async throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-l", "-c", "gcloud auth application-default print-access-token"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-
-        return try await withCheckedThrowingContinuation { continuation in
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: AIRouterError.authFailed)
-                return
-            }
-
-            process.terminationHandler = { _ in
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                guard let token = String(data: data, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines),
-                      !token.isEmpty else {
-                    continuation.resume(throwing: AIRouterError.authFailed)
-                    return
-                }
-                continuation.resume(returning: token)
-            }
-        }
     }
 
     private func cacheToken(_ token: String) {

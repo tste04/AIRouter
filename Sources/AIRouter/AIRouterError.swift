@@ -17,7 +17,7 @@ public enum AIRouterError: LocalizedError {
         case .noResponse: return "Keine Antwort von Vertex AI"
         case .apiError(let code, let msg): return "KI-API Fehler (\(code)): \(msg.prefix(200))"
         case .unexpectedResponse: return "Unerwartete Vertex AI Antwort"
-        case .authFailed: return "gcloud auth fehlgeschlagen. Bitte 'gcloud auth application-default login' ausfuehren."
+        case .authFailed: return "Authentifizierung fehlgeschlagen. Der accessTokenProvider lieferte kein gueltiges Token."
         case .budgetExhausted(let task): return "AI-Budget erschoepft fuer Task '\(task)'. Wird im naechsten Stundenzyklus ausgefuehrt."
         }
     }
