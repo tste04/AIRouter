@@ -37,9 +37,11 @@ Multi-Provider-Setups außerhalb von Google Cloud Vertex AI (siehe *Grenzen* unt
 | **Vertex AI** | Anthropic (`:rawPredict`) und Google (`:generateContent`); Modell-Fallback bei HTTP 404, Token-Refresh bei HTTP 401, Retry mit Backoff. |
 | **Lokale Inferenz** | `LocalInferenceProvider`-Protokoll (eigenes On-Device-Modell) **oder** Ollama (`/api/chat`), mit Auto-Erkennung installierter Ollama-Modelle. |
 | **Streaming** | `sendStreaming(task:…)` liefert Token-weise (In-Process, Ollama-NDJSON, oder Fallback auf Vollantwort). |
-| **Token-Budget** | `setHourlyBudget(_:)` + `budgetStatus()`; Throttling nach Priorität (critical umgeht Budget). |
-| **Telemetrie** | `setUsageCallback(_:)` liefert `AIUsageInfo` (Modell, Tokens, Dauer) pro Aufruf. |
-| **Injizierbare Auth** | `accessTokenProvider`-Closure; keine Auth-Strategie ist fest verdrahtet. |
+| **Token-Budget** | `setHourlyBudget(_:)` + `budgetStatus()`; Reservierungs-Budget (kein TOCTOU): Schaetzung wird vor dem Netzaufruf reserviert und nach Antwort mit echten Tokenzahlen verrechnet. Throttling nach Priorität (critical umgeht Budget). |
+| **Telemetrie** | `setUsageCallback(_:)` liefert `AIUsageInfo` (Modell, Tokens, Dauer, `isEstimated`) pro Aufruf — auch beim Streaming. |
+| **Injizierbare Auth** | `accessTokenProvider`-Closure liefert ein `AccessToken` (Wert + `expiresAt`); keine Auth-Strategie und keine feste TTL sind verdrahtet. |
+| **Injizierbarer Transport** | `transport: HTTPTransport` ist austauschbar (Default `URLSession`), wodurch der Router ohne echtes Netz testbar ist. |
+| **Modellkatalog** | Bekannte Modelle inkl. Upgrade-/Fallback-Kanten stehen im `ModelCatalog`; eigene Modelle via `additionalModels`. Unbekannte Modelle führen zu `AIRouterError.notConfigured` statt stiller Fehl-Zuordnung. |
 | **Logging** | `DebugLog` über `os.Logger`, optional in Datei (`DebugLog.configure(filePath:)`). |
 
 ## Grenzen (noch nicht universell)
@@ -51,8 +53,9 @@ einige Annahmen festgelegt:
   Mistral erfordern aktuell Code-Änderungen.
 - **`AITask` ist ein festes Enum** mit vordefinierten Aufgaben und deutschen
   `displayName`s.
-- **Modellnamen sind im Code hinterlegt** (in `defaultModel`, `upgradeModel`,
-  `fallbackModel`) — Overrides sind über `taskModels` möglich.
+- **Der Standard-Modellkatalog ist im Code hinterlegt** (`ModelCatalog.default`)
+  — Overrides bzw. eigene Modelle sind über `taskModels`, `taskRoutingPolicies`
+  und `additionalModels` möglich.
 
 Für volle Provider-Unabhängigkeit: `AITask` zu konfigurierbaren Profilen machen,
 Vertex hinter ein `CloudInferenceProvider`-Protokoll ziehen und Modell-/
@@ -102,7 +105,7 @@ let router = AIRouter(
     vertexRegion: "<deine-region>",
     vertexProject: "<dein-projekt>",
     accessTokenProvider: {
-        // dein OAuth2-Token fuer Vertex AI (siehe "Authentifizierung")
+        // Liefert ein AccessToken (Wert + Ablaufzeitpunkt) fuer Vertex AI.
         try await tokenSource.fetchAccessToken()
     }
 )
@@ -132,16 +135,21 @@ for try await chunk in router.sendStreaming(task: .advisorRealtime,
 ## Authentifizierung gegen Vertex AI
 
 Der Router enthält **bewusst keine** eingebaute Auth-Logik. Cloud-Aufrufe
-benötigen einen `accessTokenProvider`, der ein gültiges OAuth2-Token liefert.
-Die Token-Quelle ist frei wählbar — z. B. ein Service-Account, ein
-Metadata-Server, ein eigener Token-Cache oder ein CLI-Aufruf in deiner App.
+benötigen einen `accessTokenProvider`, der ein gültiges `AccessToken`
+(OAuth2-Tokenwert plus Ablaufzeitpunkt) liefert. Anhand von `expiresAt`
+cacht der Router das Token und fordert es erst nach Ablauf neu an — eine fest
+verdrahtete TTL gibt es nicht. Die Token-Quelle ist frei wählbar — z. B. ein
+Service-Account, ein Metadata-Server, ein eigener Token-Cache oder ein
+CLI-Aufruf in deiner App.
 
 ```swift
 let router = AIRouter(
     vertexRegion: "<deine-region>",
     vertexProject: "<dein-projekt>",
     accessTokenProvider: {
-        try await meinTokenProvider.fetch()
+        let raw = try await meinTokenProvider.fetch()
+        return AccessToken(value: raw.token, expiresAt: raw.expiry)
+        // oder: AccessToken(value: raw.token, lifetime: 3600)
     }
 )
 ```
@@ -205,3 +213,19 @@ print("Genutzt: \(status.tokensUsed)/\(status.tokenBudget) (\(Int(status.utiliza
 swift build
 swift test
 ```
+
+## Breaking Changes
+
+Diese Version bricht bewusst die API, um Korrektheit und Testbarkeit zu erhöhen:
+
+- **`accessTokenProvider` liefert jetzt `AccessToken`** (Wert + `expiresAt`)
+  statt `String`. Der Router cacht anhand `expiresAt` statt einer festen
+  50-Minuten-TTL. Migration: `return token` → `return AccessToken(value: token, lifetime: 3000)`.
+- **`taskModels` und `taskRoutingPolicies` sind typisiert**: `[AITask: String]`
+  bzw. `[AITask: RoutingPolicy]` statt stringly-typed Dictionaries.
+- **Neuer Init-Parameter `transport: HTTPTransport`** (Default `URLSession`) zum
+  Injizieren eines Test- oder Custom-Transports.
+- **Neuer Init-Parameter `additionalModels: [String: ModelDescriptor]`** zum
+  Registrieren eigener Modelle. **Unbekannte Modelle werfen `notConfigured`**
+  statt still als Anthropic/Google geraten zu werden.
+
