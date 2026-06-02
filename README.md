@@ -61,21 +61,6 @@ Für volle Provider-Unabhängigkeit: `AITask` zu konfigurierbaren Profilen mache
 Vertex hinter ein `CloudInferenceProvider`-Protokoll ziehen und Modell-/
 Fallback-Ketten aus Daten statt `switch`-Statements speisen.
 
-## Features
-
-- **Aufgabenbasiertes Routing** über `AITask` — jede Aufgabe besitzt Default-Modell,
-  Token-Budget, Priorität und Routing-Policy.
-- **Energiemodi** (`EnergyMode`): `maxCloud`, `fullPower`, `offline`, `powerSave`.
-- **Routing-Policies** (`RoutingPolicy`): `cloudOnly`, `preferCloud`, `preferLocal`,
-  `localOnly` — inkl. automatischem Fallback Cloud ↔ Lokal.
-- **Vertex AI** für Anthropic (`:rawPredict`) und Google (`:generateContent`),
-  inkl. Modell-Fallback bei HTTP 404 und Token-Refresh bei HTTP 401.
-- **Lokale Inferenz** über das `LocalInferenceProvider`-Protokoll oder
-  per Ollama (`/api/chat`, NDJSON-Streaming).
-- **Streaming** via `sendStreaming(task:…)`.
-- **Stündliches Token-Budget** mit prioritätsbasiertem Throttling.
-- **Usage-Telemetrie** über einen Callback (`AIUsageInfo`).
-
 ## Installation
 
 In `Package.swift`:
@@ -179,6 +164,47 @@ struct MyLocalLLM: LocalInferenceProvider {
 }
 
 await router.configureLocalProvider(MyLocalLLM())
+```
+
+## Eigene Modelle & Overrides
+
+`taskModels` und `taskRoutingPolicies` sind typisiert und überschreiben pro
+Aufgabe das Default-Modell bzw. die Policy. Eigene Modelle werden über
+`additionalModels` registriert — inkl. Upgrade-/Fallback-Kanten. Nicht
+registrierte Modelle werfen `AIRouterError.notConfigured` statt still als
+Anthropic/Google geraten zu werden.
+
+```swift
+let router = AIRouter(
+    vertexRegion: "<deine-region>",
+    vertexProject: "<dein-projekt>",
+    taskModels: [.factCheck: "claude-sonnet-4-6"],
+    taskRoutingPolicies: [.meetingSummary: .preferLocal],
+    accessTokenProvider: { try await tokenSource.fetchAccessToken() },
+    additionalModels: [
+        "gemini-2.5-flash-lite": ModelDescriptor(
+            provider: .google,
+            upgradesTo: "gemini-2.5-flash",
+            fallsBackTo: nil
+        )
+    ]
+)
+```
+
+## Testen ohne Netz
+
+Der HTTP-Transport ist über das `HTTPTransport`-Protokoll injizierbar (Default
+`URLSessionTransport`). In Tests lässt sich ein Mock einsetzen, der Status-Codes
+und Antworten skriptet — so sind Budget, Retry/Fallback und Telemetrie ohne
+echte Cloud-Aufrufe prüfbar.
+
+```swift
+let router = AIRouter(
+    vertexRegion: "us-central1",
+    vertexProject: "demo",
+    accessTokenProvider: { AccessToken(value: "test", lifetime: 3600) },
+    transport: MockTransport(/* skriptete Antworten */)
+)
 ```
 
 ## Budget & Telemetrie
