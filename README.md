@@ -22,7 +22,7 @@ Besonders stark bei:
 
 - **Hybrid lokal/Cloud** — On-Device-Modell/Ollama als Sparmodus, Vertex als Qualitätsmodus.
 - **Laptop-/Akku-Szenarien** — `powerSave` und `offline` schalten automatisch um.
-- **Kostenkontrolle** — stündliches Token-Budget mit prioritätsbasiertem Throttling.
+- **Kostenkontrolle** — stündliches Token- und USD-Budget mit prioritätsbasiertem Throttling.
 - **Viele heterogene KI-Aufgaben** in einer App mit unterschiedlichen Qualitätsstufen.
 
 Weniger geeignet: einfache „1 App, 1 Modell, 1 Provider"-Fälle (Overkill).
@@ -122,9 +122,9 @@ let antwort = try await router.send(
 ### Streaming
 
 ```swift
-for try await chunk in router.sendStreaming(task: .advisorRealtime,
-                                            system: "…",
-                                            user: "…") {
+for try await chunk in await router.sendStreaming(task: .advisorRealtime,
+                                                  system: "…",
+                                                  user: "…") {
     print(chunk, terminator: "")
 }
 ```
@@ -370,38 +370,52 @@ Weitere Härtungen:
 - **Ollama-Modell-Cache ist pro Endpoint** — ein Endpoint-Wechsel liefert nie
   die Modellliste eines anderen Hosts.
 
-## Unterschiede zur eingebetteten Variante
+## Modulübersicht
 
-- Die lokale In-Process-Inferenz ist durch das Protokoll `LocalInferenceProvider`
-  abstrahiert — keine harte Abhängigkeit zu einem konkreten Inferenz-Framework.
-- Die Vertex-Authentifizierung wird ausschließlich über `accessTokenProvider`
-  injiziert; es ist keine Auth-Strategie fest verdrahtet.
-- Alle relevanten Typen sind `public`.
+| Datei | Inhalt |
+| --- | --- |
+| `AIRouter.swift` | Zentraler Actor: Routing, Budget, Breaker, Cache, Streaming, Telemetrie. |
+| `AITask.swift` | Aufgaben-Enum mit Default-Modell, Token-Limit und Priorität. |
+| `RoutingPolicy.swift` / `EnergyMode.swift` | Policies und Energiemodi. |
+| `AIMessage.swift` | `AIMessage` (Multi-Turn) und `GenerationOptions`. |
+| `ModelCatalog.swift` | `ModelDescriptor` (Provider, Upgrade-/Fallback-Kanten, Preise, Kontextfenster) und Standardkatalog. |
+| `CloudInferenceProvider.swift` | Provider-Protokoll plus `OpenAICompatibleProvider` und `AnthropicDirectProvider`. |
+| `LocalInferenceProvider.swift` | Protokoll für In-Process-Inferenz. |
+| `OllamaService.swift` | Ollama-Modell-Discovery (`/api/tags`), Cache pro Endpoint. |
+| `HTTPTransport.swift` | Injizierbarer Transport (`data` + zeilenweises `lines`-Streaming). |
+| `AccessToken.swift` / `RetryPolicy.swift` | Auth-Token mit Ablauf; Retry-Strategie. |
+| `RouterStorage.swift` | Persistenz-Protokoll für den Budget-Zustand. |
+| `RouterValidation.swift` | Allowlist-Validierung für Regionen, Projekte, Modellnamen, Endpoints. |
+| `DebugLog.swift` | `os.Logger` + optionales Datei-Log (`0600`). |
 
 ## Anforderungen
 
-- macOS 13+
+- macOS 13+ (nutzt `ContinuousClock` und `os.Logger`)
 - Swift 5.9+
+- Keine externen Abhängigkeiten
 
 ## Build & Test
 
 ```sh
 swift build
-swift test
+swift test   # 38 Tests, laufen komplett gegen Mocks — kein Netz, keine Credentials
 ```
 
-## Breaking Changes
+## Versionshistorie (Kurzfassung)
 
-Diese Version bricht bewusst die API, um Korrektheit und Testbarkeit zu erhöhen:
-
-- **`accessTokenProvider` liefert jetzt `AccessToken`** (Wert + `expiresAt`)
-  statt `String`. Der Router cacht anhand `expiresAt` statt einer festen
-  50-Minuten-TTL. Migration: `return token` → `return AccessToken(value: token, lifetime: 3000)`.
-- **`taskModels` und `taskRoutingPolicies` sind typisiert**: `[AITask: String]`
-  bzw. `[AITask: RoutingPolicy]` statt stringly-typed Dictionaries.
-- **Neuer Init-Parameter `transport: HTTPTransport`** (Default `URLSession`) zum
-  Injizieren eines Test- oder Custom-Transports.
-- **Neuer Init-Parameter `additionalModels: [String: ModelDescriptor]`** zum
-  Registrieren eigener Modelle. **Unbekannte Modelle werfen `notConfigured`**
-  statt still als Anthropic/Google geraten zu werden.
+- **Provider-Unabhängigkeit & Betrieb** — `CloudInferenceProvider`-Protokoll mit
+  `OpenAICompatibleProvider`/`AnthropicDirectProvider`, JSON-Mode,
+  USD-Kosten-Budget, Budget-Warteschlange, `RouterStorage`-Persistenz,
+  Konkurrenzlimit, `modelStats()`, `requestTimeout`.
+- **Router-Erweiterung** — Multi-Turn (`AIMessage`), `GenerationOptions`,
+  natives Cloud-SSE-Streaming, Circuit-Breaker, Antwort-Cache,
+  Kosten-Telemetrie, PII-Preflight, konfigurierbare `RetryPolicy`.
+- **Security-Härtung** — URL-Allowlists (Region/Projekt/Modell),
+  Endpoint-Validierung, monotone Budget-Uhr, Fehler-Body-Begrenzung,
+  Log-Härtung (`0600`, `privacy: .private`).
+- **Basis** — Task-Routing, Energiemodi, Reservierungs-Budget, Vertex AI
+  (Anthropic + Google), Ollama/In-Process-Inferenz, injizierbare Auth und
+  injizierbarer Transport. `accessTokenProvider` liefert `AccessToken`
+  (Wert + `expiresAt`) statt `String`; unbekannte Modelle werfen
+  `notConfigured` statt still geraten zu werden.
 
