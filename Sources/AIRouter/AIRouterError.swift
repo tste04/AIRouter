@@ -9,6 +9,7 @@ public enum AIRouterError: LocalizedError {
     case unexpectedResponse
     case authFailed
     case budgetExhausted(task: String)
+    case circuitOpen(model: String)
 
     public var errorDescription: String? {
         switch self {
@@ -19,6 +20,7 @@ public enum AIRouterError: LocalizedError {
         case .unexpectedResponse: return "Unerwartete Vertex AI Antwort"
         case .authFailed: return "Authentifizierung fehlgeschlagen. Der accessTokenProvider lieferte kein gueltiges Token."
         case .budgetExhausted(let task): return "AI-Budget erschoepft fuer Task '\(task)'. Wird im naechsten Stundenzyklus ausgefuehrt."
+        case .circuitOpen(let model): return "Modell '\(model)' ist nach wiederholten Fehlern temporaer deaktiviert (Circuit-Breaker)."
         }
     }
 }

@@ -36,7 +36,13 @@ Multi-Provider-Setups außerhalb von Google Cloud Vertex AI (siehe *Grenzen* unt
 | **Cloud ↔ Lokal-Fallback** | Automatischer Wechsel bei Fehlern oder erschöpftem Budget. |
 | **Vertex AI** | Anthropic (`:rawPredict`) und Google (`:generateContent`); Modell-Fallback bei HTTP 404, Token-Refresh bei HTTP 401, Retry mit Backoff. |
 | **Lokale Inferenz** | `LocalInferenceProvider`-Protokoll (eigenes On-Device-Modell) **oder** Ollama (`/api/chat`), mit Auto-Erkennung installierter Ollama-Modelle. |
-| **Streaming** | `sendStreaming(task:…)` liefert Token-weise (In-Process, Ollama-NDJSON, oder Fallback auf Vollantwort). |
+| **Streaming** | `sendStreaming(task:…)` liefert Token-weise: In-Process, Ollama-NDJSON und Cloud nativ via SSE (`:streamRawPredict` / `:streamGenerateContent?alt=sse`), inkl. Budget-Reservierung. |
+| **Multi-Turn & Optionen** | `send(task:system:messages:options:)` mit `AIMessage`-Verlauf und `GenerationOptions` (Temperatur, top-p/k, Stop-Sequenzen) auf allen Pfaden. |
+| **Circuit-Breaker** | Nach 3 Fehlern in Folge wird ein Modell 60 s gemieden (Fallback-Kette, sonst `circuitOpen`). |
+| **Antwort-Cache** | `enableResponseCache(tasks:ttlSeconds:maxEntries:)` — opt-in für idempotente Tasks, Schlüssel = vollständige Anfrage. |
+| **Kosten-Telemetrie** | Katalog-Preise (USD/MTok) ergeben `AIUsageInfo.costUSD` pro Aufruf und `BudgetStatus.costUSD` pro Stunde. |
+| **PII-Preflight** | `setCloudPreflight(_:)` transformiert System-Prompt und Nachrichten vor jedem Cloud-Versand (z. B. Redaktion); lokale Aufrufe bleiben unberührt. |
+| **Retry-Policy** | `RetryPolicy(maxTransientRetries:baseDelay:)` im Initializer steuert Backoff für HTTP 429/5xx. |
 | **Token-Budget** | `setHourlyBudget(_:)` + `budgetStatus()`; Reservierungs-Budget (kein TOCTOU): Schaetzung wird vor dem Netzaufruf reserviert und nach Antwort mit echten Tokenzahlen verrechnet. Throttling nach Priorität (critical umgeht Budget). |
 | **Telemetrie** | `setUsageCallback(_:)` liefert `AIUsageInfo` (Modell, Tokens, Dauer, `isEstimated`) pro Aufruf — auch beim Streaming. |
 | **Injizierbare Auth** | `accessTokenProvider`-Closure liefert ein `AccessToken` (Wert + `expiresAt`); keine Auth-Strategie und keine feste TTL sind verdrahtet. |
@@ -219,6 +225,49 @@ await router.setUsageCallback { info in
 let status = await router.budgetStatus()
 print("Genutzt: \(status.tokensUsed)/\(status.tokenBudget) (\(Int(status.utilization * 100))%)")
 ```
+
+## Erweiterte Funktionen
+
+```swift
+// Multi-Turn-Konversation mit Sampling-Optionen
+let antwort = try await router.send(
+    task: .memoryQuery,
+    system: "Du bist ein hilfreicher Assistent.",
+    messages: [
+        .user("Was war unser letztes Thema?"),
+        .assistant("Wir sprachen über das Q3-Budget."),
+        .user("Fasse die offenen Punkte zusammen.")
+    ],
+    options: GenerationOptions(temperature: 0.2, stopSequences: ["###"])
+)
+
+// Natives Cloud-Streaming (SSE) — Budget wird reserviert und verrechnet
+for try await chunk in await router.sendStreaming(
+    task: .meetingSummary, system: "…", messages: [.user("…")]
+) {
+    print(chunk, terminator: "")
+}
+
+// Antwort-Cache für idempotente Klassifikations-Tasks (opt-in)
+await router.enableResponseCache(tasks: [.emailRelevance, .sentimentAnalysis], ttlSeconds: 300)
+
+// PII-Redaktion vor jedem Cloud-Versand (lokale Aufrufe bleiben unberührt)
+await router.setCloudPreflight { text in
+    text.replacingOccurrences(of: kundennummerRegex, with: "[KUNDE]", options: .regularExpression)
+}
+
+// Kosten im Blick: pro Aufruf und pro Stunde
+await router.setUsageCallback { info in
+    if let cost = info.costUSD { print("\(info.model): $\(cost)") }
+}
+let status = await router.budgetStatus()
+print("Diese Stunde: $\(status.costUSD)")
+```
+
+**Circuit-Breaker:** Meldet ein Modell wiederholt Fehler (429/5xx/Transportfehler,
+3× in Folge), wird es für 60 Sekunden gemieden. Existiert eine Fallback-Kante im
+Katalog, springt der Router automatisch dorthin; sonst wirft er
+`AIRouterError.circuitOpen(model:)`, statt weiter gegen ein totes Modell zu laufen.
 
 ## Sicherheit
 
