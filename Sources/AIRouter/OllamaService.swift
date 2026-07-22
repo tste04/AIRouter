@@ -33,20 +33,24 @@ public struct OllamaModel: Identifiable, Sendable {
 public actor OllamaService {
     public static let shared = OllamaService()
 
-    private var cachedModels: [OllamaModel] = []
-    private var cacheTimestamp: Date?
+    /// Cache pro Endpoint — ein Endpoint-Wechsel darf keine Modellliste eines
+    /// anderen Hosts liefern.
+    private var cache: [String: (models: [OllamaModel], timestamp: Date)] = [:]
     private let cacheTTL: TimeInterval = 60
 
     public init() {}
 
     /// Laedt die Liste installierter Modelle vom Ollama-Endpoint. Ergebnisse
-    /// werden fuer 60 Sekunden gecached. Bei Fehlern wird ein leeres Array geliefert.
+    /// werden fuer 60 Sekunden pro Endpoint gecached. Bei Fehlern oder einem
+    /// ungueltigen Endpoint (nur http/https mit Host erlaubt) wird ein leeres
+    /// Array geliefert.
     public func fetchModels(endpoint: String) async -> [OllamaModel] {
-        if let ts = cacheTimestamp, Date().timeIntervalSince(ts) < cacheTTL, !cachedModels.isEmpty {
-            return cachedModels
+        guard let base = RouterValidation.validatedLocalEndpoint(endpoint) else { return [] }
+
+        if let entry = cache[base], Date().timeIntervalSince(entry.timestamp) < cacheTTL, !entry.models.isEmpty {
+            return entry.models
         }
 
-        let base = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: "\(base)/api/tags") else { return [] }
 
         var request = URLRequest(url: url)
@@ -62,15 +66,15 @@ public actor OllamaService {
                 return []
             }
 
-            cachedModels = models.compactMap { dict -> OllamaModel? in
+            let parsed = models.compactMap { dict -> OllamaModel? in
                 guard let name = dict["name"] as? String else { return nil }
                 let size = dict["size"] as? Int64 ?? 0
                 let details = dict["details"] as? [String: Any]
                 let parameterSize = details?["parameter_size"] as? String ?? ""
                 return OllamaModel(name: name, size: size, parameterSize: parameterSize)
             }
-            cacheTimestamp = Date()
-            return cachedModels
+            cache[base] = (models: parsed, timestamp: Date())
+            return parsed
         } catch {
             return []
         }

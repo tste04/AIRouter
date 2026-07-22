@@ -220,6 +220,35 @@ let status = await router.budgetStatus()
 print("Genutzt: \(status.tokensUsed)/\(status.tokenBudget) (\(Int(status.utilization * 100))%)")
 ```
 
+## Sicherheit
+
+Der Router validiert alle Werte, die in Request-URLs interpoliert werden, gegen
+strikte Allowlists:
+
+- **`vertexRegion`** (landet im *Hostnamen*): nur `a-z`, `0-9`, `-`. Verhindert,
+  dass eine manipulierte Region (z. B. aus Remote-Config) Requests samt
+  Bearer-Token auf einen fremden Host umleitet.
+- **`vertexProject`**: nur `a-z`, `0-9`, `-`, `.`, `:` (Legacy-Format
+  `example.com:project` bleibt möglich).
+- **Modellnamen**: Buchstaben, Ziffern, `-`, `.`, `_`, `@` — kein `/`, keine
+  Pfad-Injection über `additionalModels`/`taskModels`.
+- **Lokale Endpoints** (`configureLocalLLM`): nur `http`/`https` mit Host;
+  ungültige Endpoints (z. B. `file://`) werden verworfen und aktivieren die
+  lokale Inferenz nicht.
+
+Weitere Härtungen:
+
+- **Budget-Reset über monotone Uhr** (`ContinuousClock`): Wanduhr-Sprünge können
+  das Stundenbudget weder vorzeitig zurücksetzen noch einfrieren.
+- **Auch `send(model:…)` (roher Modell-Pfad) zählt auf `budgetStatus()` ein** —
+  kein stiller Kosten-Bypass an der Task-Abstraktion vorbei.
+- **Fehler-Bodies sind auf 500 Zeichen begrenzt**, bevor sie in `AIRouterError`
+  (und damit ggf. in Logs der aufrufenden App) landen.
+- **Datei-Logs werden mit `0600` angelegt**; `os.Logger`-Ausgaben sind
+  `privacy: .private` (Klartext nur im explizit konfigurierten Datei-Log).
+- **Ollama-Modell-Cache ist pro Endpoint** — ein Endpoint-Wechsel liefert nie
+  die Modellliste eines anderen Hosts.
+
 ## Unterschiede zur eingebetteten Variante
 
 - Die lokale In-Process-Inferenz ist durch das Protokoll `LocalInferenceProvider`

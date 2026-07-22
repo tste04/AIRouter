@@ -85,6 +85,11 @@ public actor AIRouter {
     private var tokensUsedThisHour: Int = 0
     private var reservedTokens: Int = 0
     private var currentHourStart: Date = Date()
+    /// Monotone Uhr fuer den Budget-Reset: Wanduhr-Spruenge (NTP, manuelle
+    /// Zeitumstellung) koennen das Stundenbudget weder vorzeitig zuruecksetzen
+    /// (Kosten-Bypass) noch dauerhaft einfrieren.
+    private let budgetClock = ContinuousClock()
+    private var hourStartInstant: ContinuousClock.Instant
     private var throttledTasks: Int = 0
 
     /// - Parameters:
@@ -116,18 +121,27 @@ public actor AIRouter {
         var catalog = ModelCatalog.default
         catalog.merge(additionalModels)
         self.catalog = catalog
+        self.hourStartInstant = budgetClock.now
     }
 
     // MARK: - Configuration
 
     public func configureLocalLLM(endpoint: String, model: String, numCtx: Int = 4096) async {
-        self.localLLMEndpoint = endpoint
+        // Nur http/https mit Host akzeptieren — verhindert, dass ein fehlerhaft
+        // oder boeswillig konfigurierter "lokaler" Endpoint Prompts an ein
+        // unerwartetes Ziel (file://, fehlgeformte URL, ...) leitet.
+        let validated = RouterValidation.validatedLocalEndpoint(endpoint)
+        if !endpoint.isEmpty && validated == nil {
+            DebugLog.write("[AIRouter] Ungueltiger lokaler Endpoint verworfen (erlaubt: http/https mit Host)")
+        }
+        let sanitizedEndpoint = validated ?? ""
+        self.localLLMEndpoint = sanitizedEndpoint
         self.localLLMNumCtx = max(512, numCtx)
 
         // Kein Modell gewaehlt -> automatisch ein installiertes Ollama-Modell entdecken.
         var resolved = model
-        if resolved.isEmpty && !endpoint.isEmpty {
-            let available = await OllamaService.shared.fetchModels(endpoint: endpoint)
+        if resolved.isEmpty && !sanitizedEndpoint.isEmpty {
+            let available = await OllamaService.shared.fetchModels(endpoint: sanitizedEndpoint)
             resolved = available.first(where: { $0.name.lowercased().contains("gemma") })?.name
                 ?? available.first(where: { $0.name.lowercased().contains("qwen") })?.name
                 ?? available.first?.name
@@ -138,8 +152,8 @@ public actor AIRouter {
         }
         self.localLLMModel = resolved
 
-        if !endpoint.isEmpty {
-            DebugLog.write("[AIRouter] Local LLM konfiguriert: \(endpoint) (\(resolved.isEmpty ? "kein Modell" : resolved), num_ctx=\(self.localLLMNumCtx))")
+        if !sanitizedEndpoint.isEmpty {
+            DebugLog.write("[AIRouter] Local LLM konfiguriert: \(sanitizedEndpoint) (\(resolved.isEmpty ? "kein Modell" : resolved), num_ctx=\(self.localLLMNumCtx))")
         }
     }
 
@@ -222,7 +236,12 @@ public actor AIRouter {
         if isLocalTag(effectiveModel) {
             return try await callLocal(model: effectiveModel, system: system, user: user, maxTokens: maxTokens, task: nil).text
         }
-        return try await callVertex(model: effectiveModel, system: system, user: user, maxTokens: maxTokens, task: nil).text
+        // Auch der rohe Modell-Pfad zaehlt auf das Stundenbudget ein, damit
+        // budgetStatus() die realen Cloud-Kosten abbildet (kein stiller Bypass).
+        let result = try await callVertex(model: effectiveModel, system: system, user: user, maxTokens: maxTokens, task: nil)
+        resetHourIfNeeded()
+        tokensUsedThisHour += result.inputTokens + result.outputTokens
+        return result.text
     }
 
     public func resolvedModelName(for task: AITask) -> String {
@@ -373,8 +392,18 @@ public actor AIRouter {
     }
 
     private func vertexEndpoint(model: String, provider: ModelDescriptor.Provider) throws -> URL {
-        guard let encodedModel = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
-            throw AIRouterError.invalidEndpoint
+        // Strikte Allowlists: Region landet im HOSTNAMEN, Projekt und Modell im
+        // PFAD des Requests. Ohne Validierung koennte ein manipulierter Wert den
+        // Request samt Bearer-Token auf einen fremden Host umleiten.
+        guard RouterValidation.isValidRegion(vertexRegion) else {
+            throw AIRouterError.notConfigured("Ungueltige Vertex-Region '\(vertexRegion)' (erlaubt: a-z, 0-9, '-').")
+        }
+        guard RouterValidation.isValidProject(vertexProject) else {
+            throw AIRouterError.notConfigured("Ungueltige Vertex-Projekt-ID (erlaubt: a-z, 0-9, '-', '.', ':').")
+        }
+        guard RouterValidation.isValidModelName(model),
+              let encodedModel = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+            throw AIRouterError.notConfigured("Ungueltiger Modellname '\(model)' (erlaubt: Buchstaben, Ziffern, '-', '.', '_', '@').")
         }
         let region = vertexRegion
         let project = vertexProject
@@ -468,7 +497,7 @@ public actor AIRouter {
                     currentModel = fallback
                     continue
                 }
-                throw AIRouterError.apiError(404, body)
+                throw AIRouterError.apiError(404, String(body.prefix(500)))
 
             case 500...599 where transientAttempts < maxTransientRetries:
                 transientAttempts += 1
@@ -480,7 +509,9 @@ public actor AIRouter {
             default:
                 let body = String(data: data, encoding: .utf8) ?? ""
                 DebugLog.write("[AIRouter] HTTP \(http.statusCode) for \(currentModel): \(body.prefix(200))")
-                throw AIRouterError.apiError(http.statusCode, body)
+                // Body begrenzen: keine unbegrenzten Fremd-Antworten in Fehlern
+                // (und damit in Logs/Telemetrie der aufrufenden App) halten.
+                throw AIRouterError.apiError(http.statusCode, String(body.prefix(500)))
             }
         }
     }
@@ -574,8 +605,10 @@ public actor AIRouter {
         guard !localLLMEndpoint.isEmpty else {
             throw AIRouterError.notConfigured("Weder ein lokaler Provider noch Ollama verfuegbar. Konfiguriere einen LocalInferenceProvider oder einen Ollama-Endpoint.")
         }
-        let base = localLLMEndpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: "\(base)\(path)") else {
+        // Defense in depth: configureLocalLLM validiert bereits, hier erneut
+        // pruefen, falls der Endpoint auf anderem Weg gesetzt wurde.
+        guard let base = RouterValidation.validatedLocalEndpoint(localLLMEndpoint),
+              let url = URL(string: "\(base)\(path)") else {
             throw AIRouterError.invalidEndpoint
         }
         return url
@@ -599,7 +632,7 @@ public actor AIRouter {
 
         guard (200...299).contains(http.statusCode) else {
             let body = String(data: data, encoding: .utf8) ?? ""
-            throw AIRouterError.apiError(http.statusCode, body)
+            throw AIRouterError.apiError(http.statusCode, String(body.prefix(500)))
         }
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -707,10 +740,11 @@ public actor AIRouter {
     }
 
     private func resetHourIfNeeded() {
-        if Date().timeIntervalSince(currentHourStart) >= 3600 {
+        if budgetClock.now - hourStartInstant >= .seconds(3600) {
             tokensUsedThisHour = 0
             reservedTokens = 0
             currentHourStart = Date()
+            hourStartInstant = budgetClock.now
             throttledTasks = 0
         }
     }

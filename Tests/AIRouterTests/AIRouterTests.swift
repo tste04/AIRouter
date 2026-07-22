@@ -246,6 +246,129 @@ final class AIRouterTests: XCTestCase {
         }
         XCTAssertEqual(transport.requestCount, 0, "Budget muss vor dem Netzaufruf greifen")
     }
+
+    // MARK: - Security hardening
+
+    func testValidationRules() {
+        XCTAssertTrue(RouterValidation.isValidRegion("us-central1"))
+        XCTAssertFalse(RouterValidation.isValidRegion("us-central1/evil"))
+        XCTAssertFalse(RouterValidation.isValidRegion("evil.com"))
+        XCTAssertFalse(RouterValidation.isValidRegion(""))
+
+        XCTAssertTrue(RouterValidation.isValidProject("my-project-123"))
+        XCTAssertTrue(RouterValidation.isValidProject("example.com:legacy"))
+        XCTAssertFalse(RouterValidation.isValidProject("proj/../../etc"))
+
+        XCTAssertTrue(RouterValidation.isValidModelName("gemini-2.5-flash"))
+        XCTAssertTrue(RouterValidation.isValidModelName("claude-3-5-sonnet@20240620"))
+        XCTAssertFalse(RouterValidation.isValidModelName("evil/../model"))
+        XCTAssertFalse(RouterValidation.isValidModelName("model?x=1"))
+
+        XCTAssertEqual(RouterValidation.validatedLocalEndpoint("http://localhost:11434/"), "http://localhost:11434")
+        XCTAssertEqual(RouterValidation.validatedLocalEndpoint("https://my-host:8080"), "https://my-host:8080")
+        XCTAssertNil(RouterValidation.validatedLocalEndpoint("file:///etc/passwd"))
+        XCTAssertNil(RouterValidation.validatedLocalEndpoint("localhost:11434"))
+        XCTAssertNil(RouterValidation.validatedLocalEndpoint(""))
+    }
+
+    func testMaliciousRegionRejectedBeforeNetwork() async {
+        // Region landet im Hostnamen: "us-central1.evil.com/x" wuerde den Request
+        // (inkl. Bearer-Token) auf einen fremden Host umleiten.
+        let transport = MockTransport(responses: [])
+        let router = AIRouter(
+            vertexRegion: "us-central1.evil.com/x",
+            vertexProject: "demo",
+            accessTokenProvider: { token() },
+            transport: transport
+        )
+        do {
+            _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+            XCTFail("Expected notConfigured error")
+        } catch let error as AIRouterError {
+            guard case .notConfigured = error else {
+                return XCTFail("Expected notConfigured, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        XCTAssertEqual(transport.requestCount, 0, "Kein Request darf den Host verlassen")
+    }
+
+    func testModelNameWithPathInjectionRejected() async {
+        let transport = MockTransport(responses: [])
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            taskModels: [.factCheck: "evil/../../model"],
+            accessTokenProvider: { token() },
+            transport: transport,
+            additionalModels: ["evil/../../model": ModelDescriptor(provider: .google)]
+        )
+        do {
+            _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+            XCTFail("Expected notConfigured error")
+        } catch let error as AIRouterError {
+            guard case .notConfigured = error else {
+                return XCTFail("Expected notConfigured, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        XCTAssertEqual(transport.requestCount, 0)
+    }
+
+    func testInvalidLocalEndpointIsDiscarded() async {
+        let router = AIRouter(vertexRegion: "us-central1", vertexProject: "demo")
+        await router.configureLocalLLM(endpoint: "file:///etc/passwd", model: "gemma3")
+        let ready = await router.isLocalModelReady()
+        XCTAssertFalse(ready, "Ungueltiger Endpoint darf lokale Inferenz nicht aktivieren")
+        let stored = await router.localLLMEndpointValue()
+        XCTAssertTrue(stored.isEmpty)
+    }
+
+    func testLocalEndpointNormalized() async {
+        let router = AIRouter(vertexRegion: "us-central1", vertexProject: "demo")
+        await router.configureLocalLLM(endpoint: "http://localhost:11434/", model: "gemma3")
+        let stored = await router.localLLMEndpointValue()
+        XCTAssertEqual(stored, "http://localhost:11434")
+    }
+
+    func testRawModelSendCountsTowardBudget() async throws {
+        let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "raw", input: 5, output: 9))])
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            accessTokenProvider: { token() },
+            transport: transport
+        )
+        let result = try await router.send(model: "gemini-2.5-flash", system: "s", user: "u", maxTokens: 100)
+        XCTAssertEqual(result, "raw")
+        let status = await router.budgetStatus()
+        XCTAssertEqual(status.tokensUsed, 14, "Roher Modell-Pfad muss auf das Budget einzahlen")
+    }
+
+    func testApiErrorBodyIsCapped() async {
+        let bigBody = String(repeating: "x", count: 5_000)
+        let transport = MockTransport(responses: [.init(status: 400, body: Data(bigBody.utf8))])
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            accessTokenProvider: { token() },
+            transport: transport
+        )
+        do {
+            _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+            XCTFail("Expected apiError")
+        } catch let error as AIRouterError {
+            guard case .apiError(let code, let body) = error else {
+                return XCTFail("Expected apiError, got \(error)")
+            }
+            XCTAssertEqual(code, 400)
+            XCTAssertLessThanOrEqual(body.count, 500, "Fehler-Body muss begrenzt sein")
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
 }
 
 // MARK: - Helpers

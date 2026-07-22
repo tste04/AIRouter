@@ -27,7 +27,13 @@ public enum DebugLog {
             try? handle?.close()
             handle = nil
             guard let filePath else { return }
-            FileManager.default.createFile(atPath: filePath, contents: nil)
+            // 0600: Logzeilen koennen Endpoints, Modellnamen und Fehler-Auszuege
+            // enthalten — nur fuer den Besitzer lesbar anlegen.
+            FileManager.default.createFile(
+                atPath: filePath,
+                contents: nil,
+                attributes: [.posixPermissions: 0o600]
+            )
             handle = FileHandle(forWritingAtPath: filePath)
         }
     }
@@ -45,7 +51,9 @@ public enum DebugLog {
         lock.unlock()
         guard isEnabled else { return }
 
-        logger.debug("\(msg, privacy: .public)")
+        // .private: Log-Inhalte (Endpoints, Fehler-Auszuege) erscheinen im
+        // Unified Log nur geschwaerzt; Klartext gibt es gezielt via Datei-Log.
+        logger.debug("\(msg, privacy: .private)")
 
         ioQueue.async {
             guard let handle else { return }
