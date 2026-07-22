@@ -1,9 +1,11 @@
 # AIRouter
 
 Ein eigenständiges Swift-Package mit einem zentralen Router, der KI-Aufgaben
-anhand von **Energiemodus**, **Routing-Policy** und **Token-Budget** auf
-Cloud-Modelle (Vertex AI: Anthropic & Google) oder lokale Modelle
-(In-Process-Provider oder Ollama-HTTP) verteilt.
+anhand von **Energiemodus**, **Routing-Policy** und **Token-/Kosten-Budget** auf
+Cloud-Modelle (Vertex AI: Anthropic & Google — sowie beliebige weitere Backends
+über das `CloudInferenceProvider`-Protokoll, z. B. OpenAI-kompatible APIs oder
+Anthropic direkt) oder lokale Modelle (In-Process-Provider oder Ollama-HTTP)
+verteilt.
 
 Plug-and-play: keine Auth-Strategie und kein Cloud-Projekt sind fest verdrahtet —
 Authentifizierung, lokales Backend und Modell-/Routing-Konfiguration werden
@@ -23,8 +25,7 @@ Besonders stark bei:
 - **Kostenkontrolle** — stündliches Token-Budget mit prioritätsbasiertem Throttling.
 - **Viele heterogene KI-Aufgaben** in einer App mit unterschiedlichen Qualitätsstufen.
 
-Weniger geeignet: einfache „1 App, 1 Modell, 1 Provider"-Fälle (Overkill) sowie
-Multi-Provider-Setups außerhalb von Google Cloud Vertex AI (siehe *Grenzen* unten).
+Weniger geeignet: einfache „1 App, 1 Modell, 1 Provider"-Fälle (Overkill).
 
 ## Key-Funktionalitäten
 
@@ -35,37 +36,42 @@ Multi-Provider-Setups außerhalb von Google Cloud Vertex AI (siehe *Grenzen* unt
 | **Routing-Policies** | Pro Aufgabe `cloudOnly` / `preferCloud` / `preferLocal` / `localOnly`, überschreibbar via `taskRoutingPolicies`. |
 | **Cloud ↔ Lokal-Fallback** | Automatischer Wechsel bei Fehlern oder erschöpftem Budget. |
 | **Vertex AI** | Anthropic (`:rawPredict`) und Google (`:generateContent`); Modell-Fallback bei HTTP 404, Token-Refresh bei HTTP 401, Retry mit Backoff. |
+| **Eigene Cloud-Provider** | `CloudInferenceProvider`-Protokoll + `registerCloudProvider(_:)`; mitgeliefert: `OpenAICompatibleProvider` (OpenAI, Azure, Groq, vLLM, …) und `AnthropicDirectProvider`. Budget, Breaker, Retry, Preflight und Kosten bleiben beim Router. |
 | **Lokale Inferenz** | `LocalInferenceProvider`-Protokoll (eigenes On-Device-Modell) **oder** Ollama (`/api/chat`), mit Auto-Erkennung installierter Ollama-Modelle. |
 | **Streaming** | `sendStreaming(task:…)` liefert Token-weise: In-Process, Ollama-NDJSON und Cloud nativ via SSE (`:streamRawPredict` / `:streamGenerateContent?alt=sse`), inkl. Budget-Reservierung. |
-| **Multi-Turn & Optionen** | `send(task:system:messages:options:)` mit `AIMessage`-Verlauf und `GenerationOptions` (Temperatur, top-p/k, Stop-Sequenzen) auf allen Pfaden. |
+| **Multi-Turn & Optionen** | `send(task:system:messages:options:)` mit `AIMessage`-Verlauf und `GenerationOptions` (Temperatur, top-p/k, Stop-Sequenzen, `jsonMode`, `requestTimeout`) auf allen Pfaden. |
+| **JSON-Mode** | `GenerationOptions(jsonMode: true)` — strukturierte Ausgabe via Google `responseMimeType`, OpenAI `response_format`, Ollama `format: json`. |
 | **Circuit-Breaker** | Nach 3 Fehlern in Folge wird ein Modell 60 s gemieden (Fallback-Kette, sonst `circuitOpen`). |
 | **Antwort-Cache** | `enableResponseCache(tasks:ttlSeconds:maxEntries:)` — opt-in für idempotente Tasks, Schlüssel = vollständige Anfrage. |
 | **Kosten-Telemetrie** | Katalog-Preise (USD/MTok) ergeben `AIUsageInfo.costUSD` pro Aufruf und `BudgetStatus.costUSD` pro Stunde. |
 | **PII-Preflight** | `setCloudPreflight(_:)` transformiert System-Prompt und Nachrichten vor jedem Cloud-Versand (z. B. Redaktion); lokale Aufrufe bleiben unberührt. |
 | **Retry-Policy** | `RetryPolicy(maxTransientRetries:baseDelay:)` im Initializer steuert Backoff für HTTP 429/5xx. |
 | **Token-Budget** | `setHourlyBudget(_:)` + `budgetStatus()`; Reservierungs-Budget (kein TOCTOU): Schaetzung wird vor dem Netzaufruf reserviert und nach Antwort mit echten Tokenzahlen verrechnet. Throttling nach Priorität (critical umgeht Budget). |
-| **Telemetrie** | `setUsageCallback(_:)` liefert `AIUsageInfo` (Modell, Tokens, Dauer, `isEstimated`) pro Aufruf — auch beim Streaming. |
+| **Kosten-Budget (USD)** | `setHourlyCostBudget(usd:)` — zusätzliche Stunden-Grenze in USD auf Basis der Katalog-Preise. |
+| **Budget-Warteschlange** | `setQueueOnBudgetExhausted(true)` — Cloud-Aufrufe warten aufs nächste Stundenfenster statt zu werfen (wenn kein lokales Fallback existiert). |
+| **Persistenz** | `RouterStorage`-Protokoll + `configureStorage(_:)` — Budget-Zustand überlebt App-Neustarts (kein Budget-Reset per Neustart). |
+| **Konkurrenzlimit** | `setMaxConcurrentCloudCalls(_:)` — Backpressure für parallele Cloud-Aufrufe (Default 8). |
+| **Modell-Statistik** | `modelStats()` — Aufrufe, Fehler und Ø-Latenz pro Modell seit Prozessstart. |
+| **Telemetrie** | `setUsageCallback(_:)` liefert `AIUsageInfo` (Modell, Tokens, Dauer, `isEstimated`, `costUSD`) pro Aufruf — auch beim Streaming. |
 | **Injizierbare Auth** | `accessTokenProvider`-Closure liefert ein `AccessToken` (Wert + `expiresAt`); keine Auth-Strategie und keine feste TTL sind verdrahtet. |
 | **Injizierbarer Transport** | `transport: HTTPTransport` ist austauschbar (Default `URLSession`), wodurch der Router ohne echtes Netz testbar ist. |
 | **Modellkatalog** | Bekannte Modelle inkl. Upgrade-/Fallback-Kanten stehen im `ModelCatalog`; eigene Modelle via `additionalModels`. Unbekannte Modelle führen zu `AIRouterError.notConfigured` statt stiller Fehl-Zuordnung. |
 | **Logging** | `DebugLog` über `os.Logger`, optional in Datei (`DebugLog.configure(filePath:)`). |
 
-## Grenzen (noch nicht universell)
+## Grenzen
 
-Der Router ist **generisch in der Routing-Mechanik**, in den Inhalten aber auf
-einige Annahmen festgelegt:
+Der Router ist provider-unabhängig (Vertex eingebaut, alles Weitere über
+`CloudInferenceProvider`), in einigen Punkten aber noch festgelegt:
 
-- **Nur Vertex AI** als Cloud-Transport — OpenAI, Azure, Anthropic-direkt oder
-  Mistral erfordern aktuell Code-Änderungen.
 - **`AITask` ist ein festes Enum** mit vordefinierten Aufgaben und deutschen
-  `displayName`s.
+  `displayName`s. Konfigurierbare Task-Profile wären ein API-Bruch und sind
+  einer künftigen Major-Version vorbehalten.
+- **Kein Tool-/Function-Calling und keine Bild-Anhänge** — die Nachrichten-API
+  ist bewusst text-basiert gehalten.
 - **Der Standard-Modellkatalog ist im Code hinterlegt** (`ModelCatalog.default`)
   — Overrides bzw. eigene Modelle sind über `taskModels`, `taskRoutingPolicies`
-  und `additionalModels` möglich.
-
-Für volle Provider-Unabhängigkeit: `AITask` zu konfigurierbaren Profilen machen,
-Vertex hinter ein `CloudInferenceProvider`-Protokoll ziehen und Modell-/
-Fallback-Ketten aus Daten statt `switch`-Statements speisen.
+  und `additionalModels` möglich; Preise sind Richtwerte.
+- **Das Konkurrenzlimit ist global**, nicht pro Priorität.
 
 ## Installation
 
@@ -268,6 +274,72 @@ print("Diese Stunde: $\(status.costUSD)")
 3× in Folge), wird es für 60 Sekunden gemieden. Existiert eine Fallback-Kante im
 Katalog, springt der Router automatisch dorthin; sonst wirft er
 `AIRouterError.circuitOpen(model:)`, statt weiter gegen ein totes Modell zu laufen.
+
+## Weitere Cloud-Provider (OpenAI-kompatibel, Anthropic direkt, eigene)
+
+Modelle mit `provider: .custom("<id>")` werden an den unter dieser ID
+registrierten `CloudInferenceProvider` geleitet. Budget, Circuit-Breaker,
+Retry-Policy, PII-Preflight und Kosten-Telemetrie wendet weiterhin der Router
+an — der Provider implementiert nur Transport, Auth und Parsing.
+
+```swift
+let router = AIRouter(
+    vertexRegion: "us-central1",
+    vertexProject: "mein-projekt",
+    taskModels: [.factCheck: "gpt-4o-mini", .dossierSynthesis: "claude-opus-4-6-direct"],
+    additionalModels: [
+        "gpt-4o-mini": ModelDescriptor(
+            provider: .custom("openai"),
+            inputCostPerMTok: 0.15, outputCostPerMTok: 0.60),
+        "claude-opus-4-6-direct": ModelDescriptor(
+            provider: .custom("anthropic"),
+            inputCostPerMTok: 15, outputCostPerMTok: 75)
+    ]
+)
+
+// OpenAI-kompatibel: OpenAI, Azure OpenAI, Groq, Together, vLLM, LM Studio, …
+await router.registerCloudProvider(OpenAICompatibleProvider(
+    baseURL: "https://api.openai.com/v1",
+    apiKeyProvider: { try await keychain.openAIKey() }
+))
+
+// Anthropic direkt (ohne Vertex-Umweg)
+await router.registerCloudProvider(AnthropicDirectProvider(
+    apiKeyProvider: { try await keychain.anthropicKey() }
+))
+```
+
+Eigene Backends implementieren das Protokoll selbst (`generate` + `stream`).
+
+## Betrieb: Budgets, Persistenz, Backpressure
+
+```swift
+// Zusätzlich zum Token-Budget: harte Kosten-Grenze in USD pro Stunde.
+await router.setHourlyCostBudget(usd: 2.50)
+
+// Statt budgetExhausted zu werfen: aufs nächste Stundenfenster warten
+// (greift nur, wenn kein lokales Fallback existiert; abbrechbar via Cancellation).
+await router.setQueueOnBudgetExhausted(true)
+
+// Budget-Zustand über App-Neustarts hinweg halten (eigenes Speichermedium).
+await router.configureStorage(MyUserDefaultsStorage())
+
+// Max. parallele Cloud-Aufrufe (Backpressure), Default 8.
+await router.setMaxConcurrentCloudCalls(4)
+
+// Latenz-/Fehler-Statistik pro Modell (z. B. für ein Debug-Panel).
+for stat in await router.modelStats() {
+    print("\(stat.model): \(stat.calls) Aufrufe, \(stat.failures) Fehler, Ø \(stat.averageLatencyMs) ms")
+}
+
+// Deadline & strukturierte Ausgabe pro Aufruf
+let json = try await router.send(
+    task: .entityExtraction,
+    system: "Extrahiere Entitäten als JSON.",
+    messages: [.user(text)],
+    options: GenerationOptions(jsonMode: true, requestTimeout: 15)
+)
+```
 
 ## Sicherheit
 

@@ -76,6 +76,11 @@ public actor AIRouter {
     private var cachedToken: String?
     private var tokenExpiresAt: Date?
     private var usageCallback: (@Sendable (AIUsageInfo) -> Void)?
+    /// Registrierte ``CloudInferenceProvider`` fuer Modelle mit
+    /// `provider: .custom(id)` (OpenAI-kompatibel, Anthropic-direkt, eigene).
+    private var customProviders: [String: CloudInferenceProvider] = [:]
+    /// Optionaler Persistenz-Hook: Budget-Zustand ueberlebt App-Neustarts.
+    private var storage: RouterStorage?
     /// Wird vor jedem Cloud-Versand auf System-Prompt und Nachrichteninhalte
     /// angewandt (z. B. PII-Redaktion). Lokale Aufrufe bleiben unveraendert.
     private var cloudPreflight: (@Sendable (String) -> String)?
@@ -113,6 +118,31 @@ public actor AIRouter {
     private var hourStartInstant: ContinuousClock.Instant
     private var throttledTasks: Int = 0
     private var costThisHourUSD: Double = 0
+    /// Optionales Kosten-Budget in USD pro Stunde (zusaetzlich zum Token-Budget).
+    private var hourlyCostBudgetUSD: Double?
+    /// Wenn aktiv, warten Cloud-Aufrufe bei erschoepftem Budget (und ohne
+    /// lokales Fallback) auf das naechste Stundenfenster statt zu werfen.
+    private var queueOnBudgetExhausted = false
+
+    // MARK: - Concurrency limit
+
+    private var maxConcurrentCloudCalls = 8
+    private var activeCloudCalls = 0
+    private var slotWaiters: [CheckedContinuation<Void, Never>] = []
+
+    // MARK: - Model stats
+
+    /// Latenz-/Fehler-Telemetrie pro Modell (fuer Monitoring und Routing-Debugging).
+    public struct ModelStats: Sendable {
+        public let model: String
+        public let calls: Int
+        public let failures: Int
+        public let averageLatencyMs: Int
+    }
+
+    private var statsCalls: [String: Int] = [:]
+    private var statsFailures: [String: Int] = [:]
+    private var statsLatencyTotalMs: [String: Int] = [:]
 
     // MARK: - Circuit breaker
 
@@ -274,6 +304,71 @@ public actor AIRouter {
         responseCacheOrder.removeAll()
     }
 
+    /// Registriert einen ``CloudInferenceProvider``. Modelle, deren
+    /// ``ModelDescriptor`` `provider: .custom(provider.id)` traegt, werden an
+    /// diesen Provider geleitet — Budget, Circuit-Breaker, Retry-Policy,
+    /// Preflight und Kosten-Telemetrie bleiben beim Router.
+    public func registerCloudProvider(_ provider: CloudInferenceProvider) {
+        customProviders[provider.id] = provider
+        DebugLog.write("[AIRouter] CloudInferenceProvider '\(provider.id)' registriert")
+    }
+
+    /// Setzt ein zusaetzliches Kosten-Budget in USD pro Stunde (aus den
+    /// Katalog-Preisen berechnet). `nil` deaktiviert die Kosten-Grenze.
+    /// Tasks mit Prioritaet `critical` umgehen die Grenze wie beim Token-Budget.
+    public func setHourlyCostBudget(usd: Double?) {
+        hourlyCostBudgetUSD = usd.map { max(0, $0) }
+    }
+
+    /// Wenn aktiviert, warten Cloud-Aufrufe bei erschoepftem Budget (und ohne
+    /// lokales Fallback) auf das naechste Stundenfenster und versuchen es dann
+    /// erneut, statt `budgetExhausted` zu werfen. Abbruch via Task-Cancellation.
+    public func setQueueOnBudgetExhausted(_ enabled: Bool) {
+        queueOnBudgetExhausted = enabled
+    }
+
+    /// Begrenzung paralleler Cloud-Aufrufe (Backpressure). Default: 8.
+    public func setMaxConcurrentCloudCalls(_ limit: Int) {
+        maxConcurrentCloudCalls = max(1, limit)
+        // Frei gewordene Kapazitaet sofort an Wartende vergeben.
+        while activeCloudCalls < maxConcurrentCloudCalls, !slotWaiters.isEmpty {
+            activeCloudCalls += 1
+            slotWaiters.removeFirst().resume()
+        }
+    }
+
+    /// Konfiguriert Persistenz fuer den Budget-Zustand. Ist der gespeicherte
+    /// Stundenanfang juenger als eine Stunde, werden Zaehler und Kosten
+    /// wiederhergestellt — das Budget laesst sich nicht per Neustart umgehen.
+    public func configureStorage(_ storage: RouterStorage) async {
+        self.storage = storage
+        if let state = await storage.loadBudgetState() {
+            let elapsed = Date().timeIntervalSince(state.hourStarted)
+            if elapsed >= 0 && elapsed < 3600 {
+                tokensUsedThisHour = state.tokensUsed
+                costThisHourUSD = state.costUSD
+                throttledTasks = state.throttled
+                currentHourStart = state.hourStarted
+                hourStartInstant = budgetClock.now - .seconds(elapsed)
+                DebugLog.write("[AIRouter] Budget-Zustand wiederhergestellt (\(state.tokensUsed) Tokens, Fenster seit \(Int(elapsed))s)")
+            }
+        }
+    }
+
+    /// Latenz-/Fehler-Statistik pro Modell seit Prozessstart.
+    public func modelStats() -> [ModelStats] {
+        let models = Set(statsCalls.keys).union(statsFailures.keys)
+        return models.map { model in
+            let calls = statsCalls[model] ?? 0
+            return ModelStats(
+                model: model,
+                calls: calls,
+                failures: statsFailures[model] ?? 0,
+                averageLatencyMs: calls > 0 ? (statsLatencyTotalMs[model] ?? 0) / calls : 0
+            )
+        }.sorted { $0.model < $1.model }
+    }
+
     public func warmup() async {
         _ = try? await getAccessToken()
     }
@@ -320,13 +415,22 @@ public actor AIRouter {
             // Rein lokal (kein Budget).
             result = try await callLocal(model: model, system: system, messages: messages, maxTokens: tokens, options: options, task: task).text
         } else {
-            // Cloud mit Budget; bei Budget-Erschoepfung optional lokal.
+            // Cloud mit Budget; bei Budget-Erschoepfung optional lokal oder Warteschlange.
             do {
                 result = try await runCloud(task: task, model: model, system: system, messages: messages, maxTokens: tokens, options: options, estimate: estimate)
             } catch let error as AIRouterError {
-                guard case .budgetExhausted = error, hasLocalBackend() else { throw error }
-                DebugLog.write("[AIRouter] Budget erschoepft fuer \(task.rawValue), Fallback zu lokal")
-                result = try await callLocal(model: localModelTag, system: system, messages: messages, maxTokens: tokens, options: options, task: task).text
+                guard case .budgetExhausted = error else { throw error }
+                if hasLocalBackend() {
+                    DebugLog.write("[AIRouter] Budget erschoepft fuer \(task.rawValue), Fallback zu lokal")
+                    result = try await callLocal(model: localModelTag, system: system, messages: messages, maxTokens: tokens, options: options, task: task).text
+                } else if queueOnBudgetExhausted {
+                    let wait = secondsUntilBudgetReset()
+                    DebugLog.write("[AIRouter] Budget erschoepft fuer \(task.rawValue), warte \(Int(wait))s auf das naechste Fenster")
+                    try await Task.sleep(for: .seconds(wait))
+                    result = try await runCloud(task: task, model: model, system: system, messages: messages, maxTokens: tokens, options: options, estimate: estimate)
+                } else {
+                    throw error
+                }
             }
         }
 
@@ -353,10 +457,18 @@ public actor AIRouter {
         if isLocalTag(effectiveModel) {
             return try await callLocal(model: effectiveModel, system: system, messages: messages, maxTokens: maxTokens, options: options, task: nil).text
         }
-        let result = try await callVertex(model: effectiveModel, system: system, messages: messages, maxTokens: maxTokens, options: options, task: nil)
-        resetHourIfNeeded()
-        tokensUsedThisHour += result.inputTokens + result.outputTokens
-        return result.text
+        await acquireCloudSlot()
+        do {
+            let result = try await callVertex(model: effectiveModel, system: system, messages: messages, maxTokens: maxTokens, options: options, task: nil)
+            releaseCloudSlot()
+            resetHourIfNeeded()
+            tokensUsedThisHour += result.inputTokens + result.outputTokens
+            persistBudget()
+            return result.text
+        } catch {
+            releaseCloudSlot()
+            throw error
+        }
     }
 
     public func resolvedModelName(for task: AITask) -> String {
@@ -446,11 +558,14 @@ public actor AIRouter {
 
     private func runCloud(task: AITask, model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, estimate: Int) async throws -> String {
         try reserveBudget(task: task, estimatedTokens: estimate)
+        await acquireCloudSlot()
         do {
             let result = try await callVertex(model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, task: task)
+            releaseCloudSlot()
             settleBudget(reserved: estimate, actual: result.inputTokens + result.outputTokens)
             return result.text
         } catch {
+            releaseCloudSlot()
             releaseReservation(estimate)
             throw error
         }
@@ -459,12 +574,37 @@ public actor AIRouter {
     private func streamCloud(task: AITask, model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, continuation: AsyncThrowingStream<String, Error>.Continuation) async throws {
         let estimate = maxTokens * 4
         try reserveBudget(task: task, estimatedTokens: estimate)
+        await acquireCloudSlot()
         do {
             let usage = try await streamVertex(model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, task: task, continuation: continuation)
+            releaseCloudSlot()
             settleBudget(reserved: estimate, actual: usage.input + usage.output)
         } catch {
+            releaseCloudSlot()
             releaseReservation(estimate)
             throw error
+        }
+    }
+
+    /// Async-Semaphor fuer parallele Cloud-Aufrufe. Hinweis: Ein Warteplatz
+    /// wird bei Task-Cancellation erst beim naechsten frei werdenden Slot
+    /// aufgeloest (die Cancellation greift dann im nachfolgenden Request).
+    private func acquireCloudSlot() async {
+        if activeCloudCalls < maxConcurrentCloudCalls {
+            activeCloudCalls += 1
+            return
+        }
+        await withCheckedContinuation { continuation in
+            slotWaiters.append(continuation)
+        }
+    }
+
+    private func releaseCloudSlot() {
+        if !slotWaiters.isEmpty {
+            // Slot direkt an den naechsten Wartenden uebergeben.
+            slotWaiters.removeFirst().resume()
+        } else {
+            activeCloudCalls = max(0, activeCloudCalls - 1)
         }
     }
 
@@ -564,7 +704,7 @@ public actor AIRouter {
         case .google:
             let method = streaming ? "streamGenerateContent?alt=sse" : "generateContent"
             endpoint = "https://\(region)-aiplatform.googleapis.com/v1/projects/\(project)/locations/\(region)/publishers/google/models/\(encodedModel):\(method)"
-        case .local:
+        case .local, .custom:
             throw AIRouterError.invalidEndpoint
         }
         guard let url = URL(string: endpoint) else {
@@ -594,6 +734,7 @@ public actor AIRouter {
             if let topP = options.topP { generationConfig["topP"] = topP }
             if let topK = options.topK { generationConfig["topK"] = topK }
             if !options.stopSequences.isEmpty { generationConfig["stopSequences"] = options.stopSequences }
+            if options.jsonMode { generationConfig["responseMimeType"] = "application/json" }
             return [
                 "contents": messages.map {
                     ["role": $0.role == .assistant ? "model" : "user", "parts": [["text": $0.content]]]
@@ -601,7 +742,7 @@ public actor AIRouter {
                 "systemInstruction": ["parts": [["text": system]]],
                 "generationConfig": generationConfig
             ]
-        case .local:
+        case .local, .custom:
             return [:]
         }
     }
@@ -609,6 +750,12 @@ public actor AIRouter {
     private func callVertex(model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, task: AITask?) async throws -> CallResult {
         if isLocalTag(model) {
             return try await callLocal(model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, task: task)
+        }
+
+        // Modelle mit .custom-Provider gehen an den registrierten
+        // CloudInferenceProvider statt an Vertex.
+        if case .custom(let providerID) = try descriptor(for: model).provider {
+            return try await callCustom(providerID: providerID, model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, task: task)
         }
 
         guard !vertexProject.isEmpty else {
@@ -645,7 +792,7 @@ public actor AIRouter {
 
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
-            request.timeoutInterval = cloudTimeout
+            request.timeoutInterval = options.requestTimeout ?? cloudTimeout
             request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(
@@ -710,14 +857,21 @@ public actor AIRouter {
     /// Natives Cloud-Streaming via SSE. Liefert die gemeldeten Token-Zaehler;
     /// fehlt der Output-Zaehler, wird grob aus der Zeichenzahl geschaetzt.
     private func streamVertex(model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, task: AITask?, continuation: AsyncThrowingStream<String, Error>.Continuation) async throws -> (input: Int, output: Int) {
-        guard !vertexProject.isEmpty else {
-            throw AIRouterError.notConfigured("Vertex AI Project nicht konfiguriert")
-        }
         if breakerIsOpen(model) {
             throw AIRouterError.circuitOpen(model: model)
         }
         let desc = try descriptor(for: model)
         guard desc.provider != .local else { throw AIRouterError.invalidEndpoint }
+
+        // Modelle mit .custom-Provider streamen ueber den registrierten
+        // CloudInferenceProvider statt ueber Vertex.
+        if case .custom(let providerID) = desc.provider {
+            return try await streamCustom(providerID: providerID, model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, task: task, continuation: continuation)
+        }
+
+        guard !vertexProject.isEmpty else {
+            throw AIRouterError.notConfigured("Vertex AI Project nicht konfiguriert")
+        }
 
         let outboundSystem = cloudPreflight.map { $0(system) } ?? system
         let outboundMessages = preflightedMessages(messages)
@@ -727,7 +881,7 @@ public actor AIRouter {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = cloudTimeout
+        request.timeoutInterval = options.requestTimeout ?? cloudTimeout
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(
@@ -814,6 +968,103 @@ public actor AIRouter {
         return (inputTokens, outputTokens)
     }
 
+    // MARK: - Custom cloud providers
+
+    private func customProvider(for id: String) throws -> CloudInferenceProvider {
+        guard let provider = customProviders[id] else {
+            throw AIRouterError.notConfigured("Kein CloudInferenceProvider mit ID '\(id)' registriert. Rufe registerCloudProvider(_:) auf.")
+        }
+        return provider
+    }
+
+    private func isTransientStatus(_ status: Int) -> Bool {
+        status == 429 || (500...599).contains(status)
+    }
+
+    /// Nicht-streamender Aufruf eines registrierten Providers. Router-seitig
+    /// gelten Breaker, Retry-Policy, Preflight und Telemetrie wie bei Vertex.
+    private func callCustom(providerID: String, model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, task: AITask?) async throws -> CallResult {
+        let provider = try customProvider(for: providerID)
+        let outboundSystem = cloudPreflight.map { $0(system) } ?? system
+        let outboundMessages = preflightedMessages(messages)
+
+        var transientAttempts = 0
+        let clock = ContinuousClock()
+
+        while true {
+            try Task.checkCancellation()
+
+            if breakerIsOpen(model) {
+                throw AIRouterError.circuitOpen(model: model)
+            }
+
+            let start = clock.now
+            do {
+                let response = try await provider.generate(model: model, system: outboundSystem, messages: outboundMessages, maxTokens: maxTokens, options: options)
+                recordSuccess(model)
+                emitUsage(task: task, model: model, input: response.inputTokens, output: response.outputTokens, elapsed: clock.now - start)
+                return CallResult(text: response.text, inputTokens: response.inputTokens, outputTokens: response.outputTokens)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as AIRouterError {
+                if case .apiError(let status, let body) = error, isTransientStatus(status) {
+                    if transientAttempts < retryPolicy.maxTransientRetries {
+                        transientAttempts += 1
+                        DebugLog.write("[AIRouter] HTTP \(status) for \(model) via '\(providerID)' (retry \(transientAttempts)): \(body.prefix(120))")
+                        try await Task.sleep(for: .seconds(retryPolicy.baseDelay * pow(2.0, Double(transientAttempts - 1))))
+                        continue
+                    }
+                    recordFailure(model)
+                }
+                throw error
+            } catch {
+                recordFailure(model)
+                throw error
+            }
+        }
+    }
+
+    /// Streamender Aufruf eines registrierten Providers (ohne Retries —
+    /// ein teilweise konsumierter Stream ist nicht wiederholbar).
+    private func streamCustom(providerID: String, model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, task: AITask?, continuation: AsyncThrowingStream<String, Error>.Continuation) async throws -> (input: Int, output: Int) {
+        let provider = try customProvider(for: providerID)
+        let outboundSystem = cloudPreflight.map { $0(system) } ?? system
+        let outboundMessages = preflightedMessages(messages)
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        var inputTokens = 0
+        var outputTokens = 0
+        var charCount = 0
+
+        do {
+            let events = try await provider.stream(model: model, system: outboundSystem, messages: outboundMessages, maxTokens: maxTokens, options: options)
+            for try await event in events {
+                try Task.checkCancellation()
+                switch event {
+                case .text(let text):
+                    charCount += text.count
+                    continuation.yield(text)
+                case .usage(let input, let output):
+                    inputTokens = input
+                    outputTokens = output
+                }
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            recordFailure(model)
+            throw error
+        }
+
+        recordSuccess(model)
+        let elapsed = clock.now - start
+        let estimated = outputTokens == 0 && charCount > 0
+        if estimated { outputTokens = charCount / 4 }
+        emitUsage(task: task, model: model, input: inputTokens, output: outputTokens, elapsed: elapsed, isEstimated: estimated)
+        return (inputTokens, outputTokens)
+    }
+
     private static func parseVertex(data: Data, provider: ModelDescriptor.Provider) throws -> CallResult {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw AIRouterError.unexpectedResponse
@@ -846,7 +1097,7 @@ public actor AIRouter {
                 inputTokens: meta?["promptTokenCount"] as? Int ?? 0,
                 outputTokens: meta?["candidatesTokenCount"] as? Int ?? 0
             )
-        case .local:
+        case .local, .custom:
             throw AIRouterError.unexpectedResponse
         }
     }
@@ -894,13 +1145,15 @@ public actor AIRouter {
         ]
         if !options.stopSequences.isEmpty { modelOptions["stop"] = options.stopSequences }
 
-        return [
+        var body: [String: Any] = [
             "model": model,
             "messages": chatMessages,
             "stream": stream,
             "keep_alive": localLLMKeepAlive,
             "options": modelOptions
         ]
+        if options.jsonMode { body["format"] = "json" }
+        return body
     }
 
     private func resolveLocalModel(_ modelTag: String) throws -> String {
@@ -932,7 +1185,7 @@ public actor AIRouter {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = localTimeout
+        request.timeoutInterval = options.requestTimeout ?? localTimeout
         request.httpBody = try JSONSerialization.data(
             withJSONObject: ollamaChatBody(model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, stream: false))
 
@@ -990,7 +1243,7 @@ public actor AIRouter {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = localTimeout
+        request.timeoutInterval = options.requestTimeout ?? localTimeout
         request.httpBody = try JSONSerialization.data(
             withJSONObject: ollamaChatBody(model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, stream: true))
 
@@ -1030,6 +1283,12 @@ public actor AIRouter {
             reservedTokens += estimatedTokens
             return
         }
+        // Kosten-Grenze (USD) zusaetzlich zum Token-Budget.
+        if let costCeiling = hourlyCostBudgetUSD, costThisHourUSD >= costCeiling {
+            throttledTasks += 1
+            DebugLog.write("[AIRouter] Kosten-Budget erreicht (\(costThisHourUSD) >= \(costCeiling) USD): \(task.rawValue) aufgeschoben")
+            throw AIRouterError.budgetExhausted(task: task.rawValue)
+        }
         let projected = tokensUsedThisHour + reservedTokens + estimatedTokens
         let ceiling: Int
         switch task.priority {
@@ -1051,6 +1310,7 @@ public actor AIRouter {
     private func settleBudget(reserved estimatedTokens: Int, actual: Int) {
         reservedTokens = max(0, reservedTokens - estimatedTokens)
         tokensUsedThisHour += actual
+        persistBudget()
     }
 
     private func releaseReservation(_ estimatedTokens: Int) {
@@ -1065,7 +1325,28 @@ public actor AIRouter {
             hourStartInstant = budgetClock.now
             costThisHourUSD = 0
             throttledTasks = 0
+            persistBudget()
         }
+    }
+
+    /// Sekunden bis zum naechsten Budget-Fenster (monotone Uhr, min. 1 s).
+    private func secondsUntilBudgetReset() -> Double {
+        let elapsed = budgetClock.now - hourStartInstant
+        let remaining = Duration.seconds(3600) - elapsed
+        let seconds = Double(remaining.components.seconds) + 1
+        return max(1, seconds)
+    }
+
+    /// Speichert den Budget-Zustand fire-and-forget in den konfigurierten Storage.
+    private func persistBudget() {
+        guard let storage else { return }
+        let state = PersistedBudgetState(
+            tokensUsed: tokensUsedThisHour,
+            costUSD: costThisHourUSD,
+            throttled: throttledTasks,
+            hourStarted: currentHourStart
+        )
+        Task { await storage.saveBudgetState(state) }
     }
 
     // MARK: - Circuit breaker internals
@@ -1085,6 +1366,7 @@ public actor AIRouter {
     }
 
     private func recordFailure(_ model: String) {
+        statsFailures[model, default: 0] += 1
         var state = breakers[model] ?? BreakerState()
         state.consecutiveFailures += 1
         if state.consecutiveFailures >= breakerThreshold && state.openedAt == nil {
@@ -1165,6 +1447,8 @@ public actor AIRouter {
         if let cost {
             costThisHourUSD += cost
         }
+        statsCalls[model, default: 0] += 1
+        statsLatencyTotalMs[model, default: 0] += Self.milliseconds(elapsed)
         guard let callback = usageCallback else { return }
         callback(AIUsageInfo(
             task: task,

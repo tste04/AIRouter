@@ -29,6 +29,12 @@ enum RouterValidation {
         !value.isEmpty && value.allSatisfy { modelAllowed.contains($0) }
     }
 
+    /// Validiert eine HTTP-Basis-URL (Cloud-Provider-Endpoints): nur
+    /// `http`/`https` mit nicht-leerem Host, normalisiert ohne Trailing-Slash.
+    static func validatedHTTPBase(_ endpoint: String) -> String? {
+        validatedLocalEndpoint(endpoint)
+    }
+
     /// Validiert einen lokalen Inferenz-Endpoint: nur `http`/`https` mit
     /// nicht-leerem Host. Liefert die normalisierte Basis (ohne Trailing-Slash)
     /// oder `nil` bei ungueltiger Eingabe (z. B. `file://`, fehlendes Schema).

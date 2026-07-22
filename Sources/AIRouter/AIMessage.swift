@@ -37,17 +37,29 @@ public struct GenerationOptions: Sendable, Equatable, Hashable {
     public var topP: Double?
     public var topK: Int?
     public var stopSequences: [String]
+    /// Strukturierte JSON-Ausgabe anfordern, sofern das Backend es unterstuetzt
+    /// (Google: `responseMimeType`, OpenAI-kompatibel: `response_format`,
+    /// Ollama: `format: json`). Anthropic hat keinen nativen JSON-Mode; dort
+    /// wird die Option ignoriert.
+    public var jsonMode: Bool
+    /// Request-Deadline in Sekunden fuer diesen Aufruf; `nil` nutzt die
+    /// Router-Defaults (Cloud 60 s, lokal 120 s).
+    public var requestTimeout: TimeInterval?
 
     public init(
         temperature: Double? = nil,
         topP: Double? = nil,
         topK: Int? = nil,
-        stopSequences: [String] = []
+        stopSequences: [String] = [],
+        jsonMode: Bool = false,
+        requestTimeout: TimeInterval? = nil
     ) {
         self.temperature = temperature
         self.topP = topP
         self.topK = topK
         self.stopSequences = stopSequences
+        self.jsonMode = jsonMode
+        self.requestTimeout = requestTimeout
     }
 
     public static let `default` = GenerationOptions()

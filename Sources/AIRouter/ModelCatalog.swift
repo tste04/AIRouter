@@ -5,9 +5,16 @@ import Foundation
 /// (Degradation bei HTTP 404) sowie optionale Kosten- und Kontext-Metadaten.
 public struct ModelDescriptor: Sendable, Equatable {
     public enum Provider: Sendable, Equatable {
+        /// Anthropic via Vertex AI (`:rawPredict`).
         case anthropic
+        /// Google via Vertex AI (`:generateContent`).
         case google
+        /// Lokale Inferenz (In-Process-Provider oder Ollama).
         case local
+        /// Ein per ``AIRouter/registerCloudProvider(_:)`` registrierter
+        /// ``CloudInferenceProvider`` mit dieser ID (z. B. OpenAI-kompatibel
+        /// oder Anthropic-direkt).
+        case custom(String)
     }
 
     public let provider: Provider

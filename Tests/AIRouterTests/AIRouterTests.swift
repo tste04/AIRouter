@@ -588,6 +588,227 @@ final class AIRouterTests: XCTestCase {
         let status = await router.budgetStatus()
         XCTAssertEqual(status.costUSD, 0.055, accuracy: 0.0001)
     }
+
+    // MARK: - CloudInferenceProvider (Custom-Provider)
+
+    func testCustomProviderRouting() async throws {
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            taskModels: [.factCheck: "grok-beta"],
+            additionalModels: ["grok-beta": ModelDescriptor(provider: .custom("mock"))]
+        )
+        await router.registerCloudProvider(MockCloudProvider(id: "mock", text: "custom!"))
+        let result = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        XCTAssertEqual(result, "custom!")
+        let status = await router.budgetStatus()
+        XCTAssertEqual(status.tokensUsed, 7, "Custom-Provider muss auf das Budget einzahlen")
+        XCTAssertEqual(status.tokensReserved, 0)
+    }
+
+    func testCustomProviderStreaming() async throws {
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            taskModels: [.factCheck: "grok-beta"],
+            additionalModels: ["grok-beta": ModelDescriptor(provider: .custom("mock"))]
+        )
+        await router.registerCloudProvider(MockCloudProvider(id: "mock", text: "custom!"))
+        var chunks: [String] = []
+        for try await chunk in await router.sendStreaming(task: .factCheck, system: "s", user: "u") {
+            chunks.append(chunk)
+        }
+        XCTAssertEqual(chunks.joined(), "custom!")
+        let status = await router.budgetStatus()
+        XCTAssertEqual(status.tokensUsed, 7)
+    }
+
+    func testUnregisteredCustomProviderThrows() async {
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            taskModels: [.factCheck: "grok-beta"],
+            additionalModels: ["grok-beta": ModelDescriptor(provider: .custom("missing"))]
+        )
+        do {
+            _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+            XCTFail("Expected notConfigured")
+        } catch let error as AIRouterError {
+            guard case .notConfigured = error else {
+                return XCTFail("Expected notConfigured, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testOpenAICompatibleProviderParsesResponse() async throws {
+        let responseJSON: [String: Any] = [
+            "choices": [["message": ["content": "openai-ok"]]],
+            "usage": ["prompt_tokens": 5, "completion_tokens": 6]
+        ]
+        let body = try JSONSerialization.data(withJSONObject: responseJSON)
+        let transport = MockTransport(responses: [.init(status: 200, body: body)])
+        let provider = OpenAICompatibleProvider(
+            baseURL: "https://api.example.com/v1",
+            apiKeyProvider: { "sk-test" },
+            transport: transport
+        )
+        let response = try await provider.generate(model: "gpt-4o", system: "s", messages: [.user("u")], maxTokens: 50, options: .default)
+        XCTAssertEqual(response.text, "openai-ok")
+        XCTAssertEqual(response.inputTokens, 5)
+        XCTAssertEqual(response.outputTokens, 6)
+
+        let request = transport.requests.first
+        XCTAssertEqual(request?.url?.absoluteString, "https://api.example.com/v1/chat/completions")
+        XCTAssertEqual(request?.value(forHTTPHeaderField: "Authorization"), "Bearer sk-test")
+    }
+
+    func testAnthropicDirectProviderParsesResponse() async throws {
+        let responseJSON: [String: Any] = [
+            "content": [["type": "text", "text": "anthropic-ok"]],
+            "usage": ["input_tokens": 8, "output_tokens": 9]
+        ]
+        let body = try JSONSerialization.data(withJSONObject: responseJSON)
+        let transport = MockTransport(responses: [.init(status: 200, body: body)])
+        let provider = AnthropicDirectProvider(
+            apiKeyProvider: { "sk-ant-test" },
+            transport: transport
+        )
+        let response = try await provider.generate(model: "claude-sonnet-4-6", system: "s", messages: [.user("u")], maxTokens: 50, options: .default)
+        XCTAssertEqual(response.text, "anthropic-ok")
+        XCTAssertEqual(response.inputTokens, 8)
+        XCTAssertEqual(response.outputTokens, 9)
+
+        let request = transport.requests.first
+        XCTAssertEqual(request?.url?.absoluteString, "https://api.anthropic.com/v1/messages")
+        XCTAssertEqual(request?.value(forHTTPHeaderField: "x-api-key"), "sk-ant-test")
+        XCTAssertEqual(request?.value(forHTTPHeaderField: "anthropic-version"), "2023-06-01")
+    }
+
+    // MARK: - JSON-Mode, Kosten-Budget, Statistik, Persistenz
+
+    func testJsonModeInGoogleBody() async throws {
+        let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "{}"))])
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            accessTokenProvider: { token() },
+            transport: transport
+        )
+        _ = try await router.send(task: .factCheck, system: "s", messages: [.user("u")], maxTokens: 100, options: GenerationOptions(jsonMode: true))
+        let body = jsonBody(of: transport.requests.first)
+        let config = body["generationConfig"] as? [String: Any]
+        XCTAssertEqual(config?["responseMimeType"] as? String, "application/json")
+    }
+
+    func testCostBudgetThrottles() async throws {
+        let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "x", input: 100_000, output: 10_000))])
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            accessTokenProvider: { token() },
+            transport: transport
+        )
+        await router.setHourlyCostBudget(usd: 0.01)
+        _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100) // Kosten: 0.055 USD
+        do {
+            _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+            XCTFail("Expected budgetExhausted")
+        } catch let error as AIRouterError {
+            guard case .budgetExhausted = error else {
+                return XCTFail("Expected budgetExhausted, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        XCTAssertEqual(transport.requestCount, 1, "Kosten-Grenze muss vor dem Netzaufruf greifen")
+    }
+
+    func testModelStatsRecorded() async throws {
+        let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "ok"))])
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            accessTokenProvider: { token() },
+            transport: transport
+        )
+        _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        let stats = await router.modelStats()
+        let flash = stats.first { $0.model == "gemini-2.5-flash" }
+        XCTAssertEqual(flash?.calls, 1)
+        XCTAssertEqual(flash?.failures, 0)
+    }
+
+    func testStorageRestoresBudgetWithinHour() async throws {
+        let initial = PersistedBudgetState(tokensUsed: 1234, costUSD: 0.5, throttled: 2, hourStarted: Date().addingTimeInterval(-600))
+        let storage = MemoryStorage(initial: initial)
+        let router = AIRouter(vertexRegion: "us-central1", vertexProject: "demo")
+        await router.configureStorage(storage)
+        let status = await router.budgetStatus()
+        XCTAssertEqual(status.tokensUsed, 1234)
+        XCTAssertEqual(status.costUSD, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(status.throttledCount, 2)
+    }
+
+    func testStoragePersistsAfterSettle() async throws {
+        let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "x", input: 7, output: 13))])
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            accessTokenProvider: { token() },
+            transport: transport
+        )
+        let storage = MemoryStorage(initial: nil)
+        await router.configureStorage(storage)
+        _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        try await Task.sleep(for: .milliseconds(100)) // fire-and-forget Save abwarten
+        XCTAssertEqual(storage.current?.tokensUsed, 20)
+    }
+}
+
+// MARK: - Test-Provider & -Storage
+
+/// Minimaler CloudInferenceProvider fuer Router-Tests.
+struct MockCloudProvider: CloudInferenceProvider {
+    let id: String
+    let text: String
+
+    func generate(model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions) async throws -> CloudResponse {
+        CloudResponse(text: text, inputTokens: 3, outputTokens: 4)
+    }
+
+    func stream(model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions) async throws -> AsyncThrowingStream<CloudStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(.text(text))
+            continuation.yield(.usage(input: 3, output: 4))
+            continuation.finish()
+        }
+    }
+}
+
+/// In-Memory-Storage fuer Persistenz-Tests.
+final class MemoryStorage: RouterStorage, @unchecked Sendable {
+    private let lock = NSLock()
+    private var state: PersistedBudgetState?
+
+    init(initial: PersistedBudgetState?) {
+        state = initial
+    }
+
+    func loadBudgetState() async -> PersistedBudgetState? {
+        lock.lock(); defer { lock.unlock() }
+        return state
+    }
+
+    func saveBudgetState(_ newState: PersistedBudgetState) async {
+        lock.lock(); state = newState; lock.unlock()
+    }
+
+    var current: PersistedBudgetState? {
+        lock.lock(); defer { lock.unlock() }
+        return state
+    }
 }
 
 // MARK: - Helpers
