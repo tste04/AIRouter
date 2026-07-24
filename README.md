@@ -11,23 +11,7 @@ Plug-and-play: keine Auth-Strategie und kein Cloud-Projekt sind fest verdrahtet 
 Authentifizierung, lokales Backend und Modell-/Routing-Konfiguration werden
 vollständig von außen injiziert.
 
-## Use Case
-
-Der Router löst ein konkretes Problem: **eine App wählt pro Aufgabe automatisch das
-richtige Modell — und schaltet je nach Strom, Netz und Budget zwischen
-Cloud-Qualität und lokaler Privatsphäre/Offline-Fähigkeit um**, ohne dass jede
-Call-Site das wissen muss.
-
-Besonders stark bei:
-
-- **Hybrid lokal/Cloud** — On-Device-Modell/Ollama als Sparmodus, Vertex als Qualitätsmodus.
-- **Laptop-/Akku-Szenarien** — `powerSave` und `offline` schalten automatisch um.
-- **Kostenkontrolle** — stündliches Token- und USD-Budget mit prioritätsbasiertem Throttling.
-- **Viele heterogene KI-Aufgaben** in einer App mit unterschiedlichen Qualitätsstufen.
-
-Weniger geeignet: einfache „1 App, 1 Modell, 1 Provider"-Fälle (Overkill).
-
-## Key-Funktionalitäten
+## Funktionen
 
 | Bereich | Funktion |
 | --- | --- |
@@ -57,21 +41,6 @@ Weniger geeignet: einfache „1 App, 1 Modell, 1 Provider"-Fälle (Overkill).
 | **Injizierbarer Transport** | `transport: HTTPTransport` ist austauschbar (Default `URLSession`), wodurch der Router ohne echtes Netz testbar ist. |
 | **Modellkatalog** | Bekannte Modelle inkl. Upgrade-/Fallback-Kanten stehen im `ModelCatalog`; eigene Modelle via `additionalModels`. Unbekannte Modelle führen zu `AIRouterError.notConfigured` statt stiller Fehl-Zuordnung. |
 | **Logging** | `DebugLog` über `os.Logger`, optional in Datei (`DebugLog.configure(filePath:)`). |
-
-## Grenzen
-
-Der Router ist provider-unabhängig (Vertex eingebaut, alles Weitere über
-`CloudInferenceProvider`), in einigen Punkten aber noch festgelegt:
-
-- **`AITask` ist ein festes Enum** mit vordefinierten Aufgaben und deutschen
-  `displayName`s. Konfigurierbare Task-Profile wären ein API-Bruch und sind
-  einer künftigen Major-Version vorbehalten.
-- **Kein Tool-/Function-Calling und keine Bild-Anhänge** — die Nachrichten-API
-  ist bewusst text-basiert gehalten.
-- **Der Standard-Modellkatalog ist im Code hinterlegt** (`ModelCatalog.default`)
-  — Overrides bzw. eigene Modelle sind über `taskModels`, `taskRoutingPolicies`
-  und `additionalModels` möglich; Preise sind Richtwerte.
-- **Das Konkurrenzlimit ist global**, nicht pro Priorität.
 
 ## Installation
 
@@ -400,22 +369,4 @@ Weitere Härtungen:
 swift build
 swift test   # 38 Tests, laufen komplett gegen Mocks — kein Netz, keine Credentials
 ```
-
-## Versionshistorie (Kurzfassung)
-
-- **Provider-Unabhängigkeit & Betrieb** — `CloudInferenceProvider`-Protokoll mit
-  `OpenAICompatibleProvider`/`AnthropicDirectProvider`, JSON-Mode,
-  USD-Kosten-Budget, Budget-Warteschlange, `RouterStorage`-Persistenz,
-  Konkurrenzlimit, `modelStats()`, `requestTimeout`.
-- **Router-Erweiterung** — Multi-Turn (`AIMessage`), `GenerationOptions`,
-  natives Cloud-SSE-Streaming, Circuit-Breaker, Antwort-Cache,
-  Kosten-Telemetrie, PII-Preflight, konfigurierbare `RetryPolicy`.
-- **Security-Härtung** — URL-Allowlists (Region/Projekt/Modell),
-  Endpoint-Validierung, monotone Budget-Uhr, Fehler-Body-Begrenzung,
-  Log-Härtung (`0600`, `privacy: .private`).
-- **Basis** — Task-Routing, Energiemodi, Reservierungs-Budget, Vertex AI
-  (Anthropic + Google), Ollama/In-Process-Inferenz, injizierbare Auth und
-  injizierbarer Transport. `accessTokenProvider` liefert `AccessToken`
-  (Wert + `expiresAt`) statt `String`; unbekannte Modelle werfen
-  `notConfigured` statt still geraten zu werden.
 
