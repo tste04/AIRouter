@@ -7,7 +7,7 @@ Cloud-Modelle (Vertex AI: Anthropic & Google — sowie beliebige weitere Backend
 Anthropic direkt) oder lokale Modelle (In-Process-Provider oder Ollama-HTTP)
 verteilt.
 
-Plug-and-play: keine Auth-Strategie und kein Cloud-Projekt sind fest verdrahtet —
+Keine Auth-Strategie und kein Cloud-Projekt sind fest verdrahtet:
 Authentifizierung, lokales Backend und Modell-/Routing-Konfiguration werden
 vollständig von außen injiziert.
 
