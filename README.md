@@ -14,6 +14,24 @@ vollständig von außen injiziert.
 **Lizenz:** PolyForm Noncommercial 1.0.0 — nichtkommerziell frei, kommerziell
 kostenpflichtig (siehe [Lizenz](#lizenz) / [COMMERCIAL.md](COMMERCIAL.md)).
 
+## Inhalt
+
+- [Funktionen](#funktionen)
+- [Installation](#installation)
+- [Schnellstart](#schnellstart)
+- [Authentifizierung gegen Vertex AI](#authentifizierung-gegen-vertex-ai)
+- [Eigener In-Process-Provider](#eigener-in-process-provider)
+- [Eigene Modelle & Overrides](#eigene-modelle--overrides)
+- [Testen ohne Netz](#testen-ohne-netz)
+- [Budget & Telemetrie](#budget--telemetrie)
+- [Erweiterte Funktionen](#erweiterte-funktionen)
+- [Weitere Cloud-Provider](#weitere-cloud-provider-openai-kompatibel-anthropic-direkt-eigene)
+- [Betrieb: Budgets, Persistenz, Backpressure](#betrieb-budgets-persistenz-backpressure)
+- [Sicherheit](#sicherheit)
+- [Modulübersicht](#modulübersicht)
+- [Anforderungen](#anforderungen) · [Build & Test](#build--test)
+- [Lizenz](#lizenz) · [Beiträge](#beiträge)
+
 ## Funktionen
 
 | Bereich | Funktion |
@@ -359,6 +377,16 @@ Weitere Härtungen:
 | `RouterStorage.swift` | Persistenz-Protokoll für den Budget-Zustand. |
 | `RouterValidation.swift` | Allowlist-Validierung für Regionen, Projekte, Modellnamen, Endpoints. |
 | `DebugLog.swift` | `os.Logger` + optionales Datei-Log (`0600`). |
+
+### Projekt-Dokumente
+
+| Datei | Inhalt |
+| --- | --- |
+| [LICENSE.md](LICENSE.md) | PolyForm Noncommercial 1.0.0 (Dual-License-Header). |
+| [COMMERCIAL.md](COMMERCIAL.md) | Kommerzielle Lizenzierung — Editionen, Konditionen auf Verhandlungsbasis, Kontakt. |
+| [LICENSING.md](LICENSING.md) | Komponentenübergreifende Lizenz-Policy (Schichtenmodell, Distribution, Chain of Title). |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Beitragsregeln inkl. CLA-Pflicht und harte Invarianten. |
+| [docs/CLA.md](docs/CLA.md) | Contributor License Agreement. |
 
 ## Anforderungen
 
