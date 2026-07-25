@@ -1015,7 +1015,8 @@ public actor AIRouter {
                     inputTokens = meta["promptTokenCount"] as? Int ?? inputTokens
                     outputTokens = meta["candidatesTokenCount"] as? Int ?? outputTokens
                 }
-            case .local:
+            case .local, .custom:
+                // .custom wird oben an streamCustom dispatcht; hier unerreichbar.
                 break
             }
         }
