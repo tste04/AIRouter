@@ -37,8 +37,11 @@ public actor OllamaService {
     /// anderen Hosts liefern.
     private var cache: [String: (models: [OllamaModel], timestamp: Date)] = [:]
     private let cacheTTL: TimeInterval = 60
+    private let transport: HTTPTransport
 
-    public init() {}
+    public init(transport: HTTPTransport = URLSessionTransport()) {
+        self.transport = transport
+    }
 
     /// Laedt die Liste installierter Modelle vom Ollama-Endpoint. Ergebnisse
     /// werden fuer 60 Sekunden pro Endpoint gecached. Bei Fehlern oder einem
@@ -57,8 +60,8 @@ public actor OllamaService {
         request.timeoutInterval = 5
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let (data, http) = try await transport.data(for: request)
+            guard (200...299).contains(http.statusCode) else {
                 return []
             }
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],

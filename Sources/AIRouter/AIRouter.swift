@@ -116,6 +116,8 @@ public actor AIRouter {
     /// zuruecksetzen (Kosten-Bypass) noch Zustaende einfrieren.
     private let budgetClock = ContinuousClock()
     private var hourStartInstant: ContinuousClock.Instant
+    /// Laenge des Budget-Fensters (nur fuer Tests veraenderbar).
+    private var budgetWindow: Duration = .seconds(3600)
     private var throttledTasks: Int = 0
     private var costThisHourUSD: Double = 0
     /// Optionales Kosten-Budget in USD pro Stunde (zusaetzlich zum Token-Budget).
@@ -128,7 +130,8 @@ public actor AIRouter {
 
     private var maxConcurrentCloudCalls = 8
     private var activeCloudCalls = 0
-    private var slotWaiters: [CheckedContinuation<Void, Never>] = []
+    private var slotWaiters: [(id: UInt64, continuation: CheckedContinuation<Void, Error>)] = []
+    private var nextSlotWaiterID: UInt64 = 0
 
     // MARK: - Model stats
 
@@ -153,7 +156,18 @@ public actor AIRouter {
 
     private var breakers: [String: BreakerState] = [:]
     private let breakerThreshold = 3
-    private let breakerCooldown: Duration = .seconds(60)
+    /// Cooldown des Circuit-Breakers (nur fuer Tests veraenderbar).
+    private var breakerCooldown: Duration = .seconds(60)
+
+    // MARK: - Test hooks (internal, nur via @testable erreichbar)
+
+    func overrideBudgetWindowForTesting(seconds: TimeInterval) {
+        budgetWindow = .seconds(seconds)
+    }
+
+    func overrideBreakerCooldownForTesting(seconds: TimeInterval) {
+        breakerCooldown = .seconds(seconds)
+    }
 
     // MARK: - Response cache
 
@@ -223,7 +237,6 @@ public actor AIRouter {
             DebugLog.write("[AIRouter] Ungueltiger lokaler Endpoint verworfen (erlaubt: http/https mit Host)")
         }
         let sanitizedEndpoint = validated ?? ""
-        self.localLLMEndpoint = sanitizedEndpoint
         self.localLLMNumCtx = max(512, numCtx)
 
         // Kein Modell gewaehlt -> automatisch ein installiertes Ollama-Modell entdecken.
@@ -238,6 +251,9 @@ public actor AIRouter {
                 DebugLog.write("[AIRouter] Kein localLLMModel gesetzt -> automatisch gewaehlt: \(resolved)")
             }
         }
+        // Endpoint und Modell erst NACH der Discovery gemeinsam setzen —
+        // waehrend des await darf kein Aufrufer einen Endpoint ohne Modell sehen.
+        self.localLLMEndpoint = sanitizedEndpoint
         self.localLLMModel = resolved
 
         if !sanitizedEndpoint.isEmpty {
@@ -291,7 +307,7 @@ public actor AIRouter {
     /// Optionen). `maxEntries: 0` deaktiviert den Cache.
     public func enableResponseCache(tasks: Set<AITask>, ttlSeconds: TimeInterval = 300, maxEntries: Int = 256) {
         responseCacheMax = max(0, maxEntries)
-        responseCacheTTL = .seconds(max(1, ttlSeconds))
+        responseCacheTTL = .seconds(max(0.001, ttlSeconds))
         cacheableTasks = responseCacheMax > 0 ? tasks : []
         if responseCacheMax == 0 {
             responseCache.removeAll()
@@ -333,7 +349,7 @@ public actor AIRouter {
         // Frei gewordene Kapazitaet sofort an Wartende vergeben.
         while activeCloudCalls < maxConcurrentCloudCalls, !slotWaiters.isEmpty {
             activeCloudCalls += 1
-            slotWaiters.removeFirst().resume()
+            slotWaiters.removeFirst().continuation.resume(returning: ())
         }
     }
 
@@ -390,7 +406,7 @@ public actor AIRouter {
     ) async throws -> String {
         let model = resolveModel(for: task)
         let tokens = effectiveMaxTokens(task: task, requested: maxTokens)
-        let estimate = tokens * 4
+        let estimate = estimatedRequestTokens(system: system, messages: messages, maxTokens: tokens)
         let policy = taskRoutingPolicies[task] ?? task.routingPolicy
 
         let cacheKey = responseCacheKey(task: task, model: model, system: system, messages: messages, maxTokens: tokens, options: options)
@@ -400,6 +416,10 @@ public actor AIRouter {
         }
 
         let result: String
+        // Degradierte Ergebnisse (Budget-Fallback auf ein schwaecheres lokales
+        // Modell) duerfen nicht gecacht werden, sonst wird die schwaechere
+        // Antwort bis TTL-Ablauf serviert, obwohl die Cloud wieder kann.
+        var cacheStoreAllowed = true
 
         if isLocalTag(model) && policy == .preferLocal {
             // preferLocal: erst lokal, bei Fehler (ausser Cancellation) Cloud-Fallback.
@@ -422,6 +442,7 @@ public actor AIRouter {
                 guard case .budgetExhausted = error else { throw error }
                 if hasLocalBackend() {
                     DebugLog.write("[AIRouter] Budget erschoepft fuer \(task.rawValue), Fallback zu lokal")
+                    cacheStoreAllowed = false
                     result = try await callLocal(model: localModelTag, system: system, messages: messages, maxTokens: tokens, options: options, task: task).text
                 } else if queueOnBudgetExhausted {
                     let wait = secondsUntilBudgetReset()
@@ -434,7 +455,7 @@ public actor AIRouter {
             }
         }
 
-        if let key = cacheKey {
+        if let key = cacheKey, cacheStoreAllowed {
             storeResponse(result, for: key)
         }
         return result
@@ -457,7 +478,7 @@ public actor AIRouter {
         if isLocalTag(effectiveModel) {
             return try await callLocal(model: effectiveModel, system: system, messages: messages, maxTokens: maxTokens, options: options, task: nil).text
         }
-        await acquireCloudSlot()
+        try await acquireCloudSlot()
         do {
             let result = try await callVertex(model: effectiveModel, system: system, messages: messages, maxTokens: maxTokens, options: options, task: nil)
             releaseCloudSlot()
@@ -537,9 +558,13 @@ public actor AIRouter {
         public let hourStarted: Date
         /// Geschaetzte Cloud-Kosten dieser Stunde in USD (aus Katalog-Preisen).
         public let costUSD: Double
+        /// Sekunden bis zum Fenster-Reset — aus der monotonen Uhr abgeleitet
+        /// (konsistent mit dem tatsaechlichen Reset, unbeeindruckt von
+        /// Wanduhr-Spruengen).
+        public let secondsUntilReset: Int
         public var remaining: Int { max(0, tokenBudget - tokensUsed - tokensReserved) }
         public var utilization: Double { tokenBudget > 0 ? Double(tokensUsed + tokensReserved) / Double(tokenBudget) : 0 }
-        public var minutesUntilReset: Int { max(0, Int((3600 - Date().timeIntervalSince(hourStarted)) / 60)) }
+        public var minutesUntilReset: Int { secondsUntilReset / 60 }
     }
 
     public func budgetStatus() -> BudgetStatus {
@@ -550,7 +575,8 @@ public actor AIRouter {
             tokenBudget: hourlyTokenBudget,
             throttledCount: throttledTasks,
             hourStarted: currentHourStart,
-            costUSD: costThisHourUSD
+            costUSD: costThisHourUSD,
+            secondsUntilReset: Int(rawSecondsUntilReset())
         )
     }
 
@@ -558,7 +584,12 @@ public actor AIRouter {
 
     private func runCloud(task: AITask, model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, estimate: Int) async throws -> String {
         try reserveBudget(task: task, estimatedTokens: estimate)
-        await acquireCloudSlot()
+        do {
+            try await acquireCloudSlot()
+        } catch {
+            releaseReservation(estimate)
+            throw error
+        }
         do {
             let result = try await callVertex(model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, task: task)
             releaseCloudSlot()
@@ -572,9 +603,14 @@ public actor AIRouter {
     }
 
     private func streamCloud(task: AITask, model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, continuation: AsyncThrowingStream<String, Error>.Continuation) async throws {
-        let estimate = maxTokens * 4
+        let estimate = estimatedRequestTokens(system: system, messages: messages, maxTokens: maxTokens)
         try reserveBudget(task: task, estimatedTokens: estimate)
-        await acquireCloudSlot()
+        do {
+            try await acquireCloudSlot()
+        } catch {
+            releaseReservation(estimate)
+            throw error
+        }
         do {
             let usage = try await streamVertex(model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, task: task, continuation: continuation)
             releaseCloudSlot()
@@ -586,23 +622,36 @@ public actor AIRouter {
         }
     }
 
-    /// Async-Semaphor fuer parallele Cloud-Aufrufe. Hinweis: Ein Warteplatz
-    /// wird bei Task-Cancellation erst beim naechsten frei werdenden Slot
-    /// aufgeloest (die Cancellation greift dann im nachfolgenden Request).
-    private func acquireCloudSlot() async {
+    /// Async-Semaphor fuer parallele Cloud-Aufrufe. Cancellation-korrekt:
+    /// Ein abgebrochener Task verlaesst die Warteschlange sofort mit
+    /// `CancellationError`, statt einen Slot zu blockieren oder zu stehlen.
+    private func acquireCloudSlot() async throws {
+        try Task.checkCancellation()
         if activeCloudCalls < maxConcurrentCloudCalls {
             activeCloudCalls += 1
             return
         }
-        await withCheckedContinuation { continuation in
-            slotWaiters.append(continuation)
+        let id = nextSlotWaiterID
+        nextSlotWaiterID += 1
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                slotWaiters.append((id: id, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelSlotWaiter(id) }
         }
+    }
+
+    private func cancelSlotWaiter(_ id: UInt64) {
+        guard let index = slotWaiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = slotWaiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
     }
 
     private func releaseCloudSlot() {
         if !slotWaiters.isEmpty {
-            // Slot direkt an den naechsten Wartenden uebergeben.
-            slotWaiters.removeFirst().resume()
+            // Slot direkt an den naechsten Wartenden uebergeben (Zaehler bleibt).
+            slotWaiters.removeFirst().continuation.resume(returning: ())
         } else {
             activeCloudCalls = max(0, activeCloudCalls - 1)
         }
@@ -613,6 +662,14 @@ public actor AIRouter {
     private func effectiveMaxTokens(task: AITask, requested: Int?) -> Int {
         let base = requested ?? task.defaultMaxTokens
         return energyMode == .maxCloud ? Int((Double(base) * 1.5 / 100).rounded() * 100) : base
+    }
+
+    /// Budget-Schaetzung fuer eine Anfrage: Input (System + Verlauf, ~4 Zeichen
+    /// pro Token) plus maximale Output-Tokens. Vorher wurde der Input komplett
+    /// ignoriert — grosse Prompts liefen am Reservierungs-Budget vorbei.
+    private func estimatedRequestTokens(system: String, messages: [AIMessage], maxTokens: Int) -> Int {
+        let inputChars = system.count + messages.reduce(0) { $0 + $1.content.count }
+        return inputChars / 4 + maxTokens
     }
 
     private var localModelTag: String {
@@ -838,7 +895,7 @@ public actor AIRouter {
                 transientAttempts += 1
                 let body = String(data: data, encoding: .utf8) ?? ""
                 DebugLog.write("[AIRouter] HTTP \(http.statusCode) for \(currentModel) (retry \(transientAttempts)): \(body.prefix(120))")
-                try await Task.sleep(for: .seconds(retryPolicy.baseDelay * pow(2.0, Double(transientAttempts - 1))))
+                try await Task.sleep(for: .seconds(Self.backoffDelay(policy: retryPolicy, attempt: transientAttempts)))
                 continue
 
             default:
@@ -1011,7 +1068,7 @@ public actor AIRouter {
                     if transientAttempts < retryPolicy.maxTransientRetries {
                         transientAttempts += 1
                         DebugLog.write("[AIRouter] HTTP \(status) for \(model) via '\(providerID)' (retry \(transientAttempts)): \(body.prefix(120))")
-                        try await Task.sleep(for: .seconds(retryPolicy.baseDelay * pow(2.0, Double(transientAttempts - 1))))
+                        try await Task.sleep(for: .seconds(Self.backoffDelay(policy: retryPolicy, attempt: transientAttempts)))
                         continue
                     }
                     recordFailure(model)
@@ -1318,7 +1375,7 @@ public actor AIRouter {
     }
 
     private func resetHourIfNeeded() {
-        if budgetClock.now - hourStartInstant >= .seconds(3600) {
+        if budgetClock.now - hourStartInstant >= budgetWindow {
             tokensUsedThisHour = 0
             reservedTokens = 0
             currentHourStart = Date()
@@ -1329,12 +1386,16 @@ public actor AIRouter {
         }
     }
 
-    /// Sekunden bis zum naechsten Budget-Fenster (monotone Uhr, min. 1 s).
-    private func secondsUntilBudgetReset() -> Double {
+    /// Sekunden bis zum Fenster-Reset (monotone Uhr; 0, wenn faellig).
+    private func rawSecondsUntilReset() -> Double {
         let elapsed = budgetClock.now - hourStartInstant
-        let remaining = Duration.seconds(3600) - elapsed
-        let seconds = Double(remaining.components.seconds) + 1
-        return max(1, seconds)
+        let remaining = budgetWindow - elapsed
+        return max(0, Double(remaining.components.seconds))
+    }
+
+    /// Wartezeit fuer die Budget-Warteschlange (min. 1 s, +1 s Puffer).
+    private func secondsUntilBudgetReset() -> Double {
+        max(1, rawSecondsUntilReset() + 1)
     }
 
     /// Speichert den Budget-Zustand fire-and-forget in den konfigurierten Storage.
@@ -1460,6 +1521,12 @@ public actor AIRouter {
             isEstimated: isEstimated,
             costUSD: cost
         ))
+    }
+
+    /// Exponentieller Backoff mit Jitter (0,8–1,2×) gegen Thundering-Herd
+    /// bei gleichzeitig retryenden Aufrufern.
+    private static func backoffDelay(policy: RetryPolicy, attempt: Int) -> Double {
+        policy.baseDelay * pow(2.0, Double(attempt - 1)) * Double.random(in: 0.8...1.2)
     }
 
     private static func milliseconds(_ duration: Duration) -> Int {

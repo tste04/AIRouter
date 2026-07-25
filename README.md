@@ -71,10 +71,10 @@ In `Package.swift`:
 .package(path: "../AIRouter")
 ```
 
-oder als Git-Abhängigkeit:
+oder als Git-Abhängigkeit (bis zum ersten getaggten Release über den Branch):
 
 ```swift
-.package(url: "https://github.com/rdtste/AIRouter.git", from: "1.0.0")
+.package(url: "https://github.com/rdtste/AIRouter.git", branch: "main")
 ```
 
 und im Target:
@@ -359,6 +359,12 @@ Weitere Härtungen:
   `privacy: .private` (Klartext nur im explizit konfigurierten Datei-Log).
 - **Ollama-Modell-Cache ist pro Endpoint** — ein Endpoint-Wechsel liefert nie
   die Modellliste eines anderen Hosts.
+- **Keine Klartext-Keys ins Netz**: Cloud-Provider akzeptieren `http://` nur
+  für Loopback-/private Hosts (explizites Opt-out via `allowInsecureHTTP`).
+- **Response-Größenlimit**: Der Standard-Transport kappt Antworten bei 50 MB
+  (konfigurierbar) — kein Speicher-DoS durch defekte/kompromittierte Endpoints.
+
+Details und Meldeweg für Schwachstellen: [SECURITY.md](SECURITY.md).
 
 ## Modulübersicht
 
@@ -385,12 +391,13 @@ Weitere Härtungen:
 | [LICENSE.md](LICENSE.md) | PolyForm Noncommercial 1.0.0 (Dual-License-Header). |
 | [COMMERCIAL.md](COMMERCIAL.md) | Kommerzielle Lizenzierung — Editionen, Konditionen auf Verhandlungsbasis, Kontakt. |
 | [LICENSING.md](LICENSING.md) | Komponentenübergreifende Lizenz-Policy (Schichtenmodell, Distribution, Chain of Title). |
+| [SECURITY.md](SECURITY.md) | Sicherheitsmodell und Meldeweg für Schwachstellen. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Beitragsregeln inkl. CLA-Pflicht und harte Invarianten. |
 | [docs/CLA.md](docs/CLA.md) | Contributor License Agreement. |
 
 ## Anforderungen
 
-- macOS 13+ (nutzt `ContinuousClock` und `os.Logger`)
+- macOS 13+ / iOS 16+ (nutzt `ContinuousClock` und `os.Logger`)
 - Swift 5.9+
 - Keine externen Abhängigkeiten
 
@@ -398,8 +405,11 @@ Weitere Härtungen:
 
 ```sh
 swift build
-swift test   # 38 Tests, laufen komplett gegen Mocks — kein Netz, keine Credentials
+swift test   # 47 Tests, laufen komplett gegen Mocks — kein Netz, keine Credentials
 ```
+
+CI (GitHub Actions, macOS) baut und testet jeden Push auf `main` und jeden
+Pull Request: [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Lizenz
 

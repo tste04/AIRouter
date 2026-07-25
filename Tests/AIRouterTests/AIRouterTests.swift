@@ -233,9 +233,9 @@ final class AIRouterTests: XCTestCase {
             transport: transport
         )
         await router.setHourlyBudget(10_000) // low-prio ceiling = 7.5k
-        // factCheck is .low priority; maxTokens 2000 -> estimate 8000 > 7500 ceiling.
+        // factCheck is .low priority; maxTokens 8000 -> estimate ~8000 > 7500 ceiling.
         do {
-            _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 2_000)
+            _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 8_000)
             XCTFail("Expected budgetExhausted")
         } catch let error as AIRouterError {
             guard case .budgetExhausted = error else {
@@ -751,6 +751,194 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(status.throttledCount, 2)
     }
 
+    func testBudgetEstimateIncludesInput() async {
+        // Grosser Input muss in die Reservierung einfliessen, auch wenn
+        // maxTokens klein ist (~40k Zeichen ≈ 10k Tokens > 7.5k-Ceiling).
+        let transport = MockTransport(responses: [])
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            accessTokenProvider: { token() },
+            transport: transport
+        )
+        await router.setHourlyBudget(10_000)
+        let hugeInput = String(repeating: "x", count: 40_000)
+        do {
+            _ = try await router.send(task: .factCheck, system: hugeInput, user: "u", maxTokens: 100)
+            XCTFail("Expected budgetExhausted")
+        } catch let error as AIRouterError {
+            guard case .budgetExhausted = error else {
+                return XCTFail("Expected budgetExhausted, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        XCTAssertEqual(transport.requestCount, 0)
+    }
+
+    func testQueueOnBudgetExhaustedRetriesNextWindow() async throws {
+        let transport = MockTransport(responses: [
+            .init(status: 200, body: googleBody(text: "big", input: 4_000, output: 4_000)),
+            .init(status: 200, body: googleBody(text: "queued"))
+        ])
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            accessTokenProvider: { token() },
+            transport: transport
+        )
+        await router.setHourlyBudget(10_000)
+        await router.overrideBudgetWindowForTesting(seconds: 1)
+        await router.setQueueOnBudgetExhausted(true)
+        _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100) // verbraucht 8000
+        // Zweiter Aufruf: 8000 + estimate > 7500-Ceiling -> wartet aufs neue Fenster.
+        let result = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        XCTAssertEqual(result, "queued")
+        XCTAssertEqual(transport.requestCount, 2)
+    }
+
+    func testConcurrencyLimitSerializesCloudCalls() async throws {
+        let transport = GatedTransport(body: googleBody(text: "ok"))
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            accessTokenProvider: { token() },
+            transport: transport
+        )
+        await router.setMaxConcurrentCloudCalls(1)
+        let first = Task { try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100) }
+        let second = Task { try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100) }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(transport.startedCount, 1, "Zweiter Call muss auf den Slot warten")
+        transport.open()
+        _ = try await first.value
+        _ = try await second.value
+        XCTAssertEqual(transport.startedCount, 2)
+    }
+
+    func testCircuitBreakerClosesAfterCooldown() async throws {
+        let transport = MockTransport(responses: [
+            .init(status: 503, body: Data()),
+            .init(status: 503, body: Data()),
+            .init(status: 503, body: Data()),
+            .init(status: 200, body: googleBody(text: "recovered"))
+        ])
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            accessTokenProvider: { token() },
+            transport: transport,
+            retryPolicy: RetryPolicy(maxTransientRetries: 0, baseDelay: 0)
+        )
+        await router.overrideBreakerCooldownForTesting(seconds: 0.1)
+        for _ in 0..<3 {
+            _ = try? await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        }
+        try await Task.sleep(for: .milliseconds(250))
+        let result = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        XCTAssertEqual(result, "recovered", "Breaker muss nach Cooldown wieder schliessen")
+    }
+
+    func testResponseCacheExpiresAfterTTL() async throws {
+        let transport = MockTransport(responses: [
+            .init(status: 200, body: googleBody(text: "a")),
+            .init(status: 200, body: googleBody(text: "b"))
+        ])
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            accessTokenProvider: { token() },
+            transport: transport
+        )
+        await router.enableResponseCache(tasks: [.factCheck], ttlSeconds: 0.1)
+        let first = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        try await Task.sleep(for: .milliseconds(250))
+        let second = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        XCTAssertEqual(first, "a")
+        XCTAssertEqual(second, "b", "Abgelaufener Cache-Eintrag muss neu geladen werden")
+        XCTAssertEqual(transport.requestCount, 2)
+    }
+
+    func testLocalFallbackResultNotCached() async throws {
+        let ollamaBody = try JSONSerialization.data(withJSONObject: [
+            "message": ["content": "local"], "prompt_eval_count": 1, "eval_count": 2
+        ])
+        let transport = MockTransport(responses: [
+            .init(status: 200, body: ollamaBody),
+            .init(status: 200, body: ollamaBody)
+        ])
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            accessTokenProvider: { token() },
+            transport: transport
+        )
+        await router.configureLocalLLM(endpoint: "http://localhost:11434", model: "gemma3")
+        await router.setHourlyBudget(10_000)
+        await router.enableResponseCache(tasks: [.factCheck])
+        let hugeInput = String(repeating: "x", count: 40_000) // erzwingt budgetExhausted -> lokal
+        let first = try await router.send(task: .factCheck, system: hugeInput, user: "u", maxTokens: 100)
+        let second = try await router.send(task: .factCheck, system: hugeInput, user: "u", maxTokens: 100)
+        XCTAssertEqual(first, "local")
+        XCTAssertEqual(second, "local")
+        XCTAssertEqual(transport.requestCount, 2, "Degradiertes Fallback-Ergebnis darf nicht gecacht werden")
+    }
+
+    func testOllamaServiceParsesModels() async throws {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "models": [["name": "gemma3:latest", "size": 3_000_000_000, "details": ["parameter_size": "4B"]]]
+        ])
+        let transport = MockTransport(responses: [.init(status: 200, body: body)])
+        let service = OllamaService(transport: transport)
+        let models = await service.fetchModels(endpoint: "http://localhost:11434")
+        XCTAssertEqual(models.count, 1)
+        XCTAssertEqual(models.first?.name, "gemma3:latest")
+        XCTAssertEqual(models.first?.parameterSize, "4B")
+    }
+
+    func testInsecureRemoteCloudBaseRejected() async {
+        // http:// nur fuer Loopback/private Hosts — Keys nie im Klartext ins Netz.
+        XCTAssertNotNil(RouterValidation.validatedCloudBase("http://localhost:8000/v1"))
+        XCTAssertNotNil(RouterValidation.validatedCloudBase("http://192.168.1.20:8000/v1"))
+        XCTAssertNotNil(RouterValidation.validatedCloudBase("https://api.example.com/v1"))
+        XCTAssertNil(RouterValidation.validatedCloudBase("http://api.example.com/v1"))
+        XCTAssertNotNil(RouterValidation.validatedCloudBase("http://api.example.com/v1", allowInsecureHTTP: true))
+
+        let provider = OpenAICompatibleProvider(
+            baseURL: "http://api.example.com/v1",
+            apiKeyProvider: { "sk-test" },
+            transport: MockTransport(responses: [])
+        )
+        do {
+            _ = try await provider.generate(model: "m", system: "s", messages: [.user("u")], maxTokens: 10, options: .default)
+            XCTFail("Expected invalidEndpoint")
+        } catch let error as AIRouterError {
+            guard case .invalidEndpoint = error else {
+                return XCTFail("Expected invalidEndpoint, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testMaxCompletionTokensField() async throws {
+        let responseJSON: [String: Any] = [
+            "choices": [["message": ["content": "ok"]]],
+            "usage": ["prompt_tokens": 1, "completion_tokens": 2]
+        ]
+        let transport = MockTransport(responses: [.init(status: 200, body: try JSONSerialization.data(withJSONObject: responseJSON))])
+        let provider = OpenAICompatibleProvider(
+            baseURL: "https://api.example.com/v1",
+            apiKeyProvider: { "k" },
+            transport: transport,
+            tokenLimitField: .maxCompletionTokens
+        )
+        _ = try await provider.generate(model: "o4-mini", system: "s", messages: [.user("u")], maxTokens: 42, options: .default)
+        let body = jsonBody(of: transport.requests.first)
+        XCTAssertEqual(body["max_completion_tokens"] as? Int, 42)
+        XCTAssertNil(body["max_tokens"])
+    }
+
     func testStoragePersistsAfterSettle() async throws {
         let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "x", input: 7, output: 13))])
         let router = AIRouter(
@@ -808,6 +996,60 @@ final class MemoryStorage: RouterStorage, @unchecked Sendable {
     var current: PersistedBudgetState? {
         lock.lock(); defer { lock.unlock() }
         return state
+    }
+}
+
+/// Transport, dessen Antworten hinter einem Tor warten — deterministische
+/// Ueberlappung fuer Konkurrenz-Tests.
+final class GatedTransport: HTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var gateOpen = false
+    private var started = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private let body: Data
+
+    init(body: Data) {
+        self.body = body
+    }
+
+    var startedCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return started
+    }
+
+    func open() {
+        lock.lock()
+        gateOpen = true
+        let resumable = waiters
+        waiters = []
+        lock.unlock()
+        resumable.forEach { $0.resume() }
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        lock.lock()
+        started += 1
+        let isOpen = gateOpen
+        lock.unlock()
+        if !isOpen {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                lock.lock()
+                if gateOpen {
+                    lock.unlock()
+                    continuation.resume()
+                    return
+                }
+                waiters.append(continuation)
+                lock.unlock()
+            }
+        }
+        let http = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        return (body, http)
+    }
+
+    func lines(for request: URLRequest) async throws -> (AsyncThrowingStream<String, Error>, HTTPURLResponse) {
+        let http = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        return (AsyncThrowingStream { $0.finish() }, http)
     }
 }
 

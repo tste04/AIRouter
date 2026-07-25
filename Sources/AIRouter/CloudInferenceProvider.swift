@@ -48,26 +48,44 @@ public protocol CloudInferenceProvider: Sendable {
 ///
 /// Auth und Transport sind injizierbar; es ist nichts fest verdrahtet.
 public struct OpenAICompatibleProvider: CloudInferenceProvider {
+    /// Feldname fuer das Token-Limit: OpenAI hat `max_tokens` zugunsten von
+    /// `max_completion_tokens` deprecated (o-Serie lehnt `max_tokens` ab);
+    /// viele kompatible Server (vLLM, Groq, LM Studio) erwarten weiterhin
+    /// `max_tokens`.
+    public enum TokenLimitField: Sendable {
+        case maxTokens
+        case maxCompletionTokens
+    }
+
     public let id: String
     private let baseURL: String
     private let apiKeyProvider: @Sendable () async throws -> String
     private let transport: HTTPTransport
     private let timeout: TimeInterval
     private let extraHeaders: [String: String]
+    private let tokenLimitField: TokenLimitField
+    private let allowInsecureHTTP: Bool
 
     /// - Parameters:
     ///   - id: Provider-ID fuer `ModelDescriptor.provider = .custom(id)`.
     ///   - baseURL: API-Basis inkl. Versionspfad, z. B. `https://api.openai.com/v1`.
+    ///     `http://` ist nur fuer Loopback-/private Hosts zulaessig, sofern nicht
+    ///     `allowInsecureHTTP` gesetzt ist (Keys nie im Klartext an fremde Hosts).
     ///   - apiKeyProvider: Liefert den Bearer-Key pro Request (rotierbar).
     ///   - transport: Injizierbarer HTTP-Transport (testbar ohne Netz).
     ///   - extraHeaders: Zusaetzliche Header (z. B. `api-key` fuer Azure).
+    ///   - tokenLimitField: `.maxTokens` (Default, breite Kompatibilitaet) oder
+    ///     `.maxCompletionTokens` (aktuelles OpenAI-Feld, noetig fuer o-Serie).
+    ///   - allowInsecureHTTP: Erlaubt `http://` auch fuer nicht-private Hosts.
     public init(
         id: String = "openai",
         baseURL: String,
         apiKeyProvider: @escaping @Sendable () async throws -> String,
         transport: HTTPTransport = URLSessionTransport(),
         timeout: TimeInterval = 60,
-        extraHeaders: [String: String] = [:]
+        extraHeaders: [String: String] = [:],
+        tokenLimitField: TokenLimitField = .maxTokens,
+        allowInsecureHTTP: Bool = false
     ) {
         self.id = id
         self.baseURL = baseURL
@@ -75,10 +93,12 @@ public struct OpenAICompatibleProvider: CloudInferenceProvider {
         self.transport = transport
         self.timeout = timeout
         self.extraHeaders = extraHeaders
+        self.tokenLimitField = tokenLimitField
+        self.allowInsecureHTTP = allowInsecureHTTP
     }
 
     private func makeRequest(model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, stream: Bool) async throws -> URLRequest {
-        guard let base = RouterValidation.validatedHTTPBase(baseURL),
+        guard let base = RouterValidation.validatedCloudBase(baseURL, allowInsecureHTTP: allowInsecureHTTP),
               let url = URL(string: "\(base)/chat/completions") else {
             throw AIRouterError.invalidEndpoint
         }
@@ -88,9 +108,12 @@ public struct OpenAICompatibleProvider: CloudInferenceProvider {
 
         var body: [String: Any] = [
             "model": model,
-            "messages": chatMessages,
-            "max_tokens": maxTokens
+            "messages": chatMessages
         ]
+        switch tokenLimitField {
+        case .maxTokens: body["max_tokens"] = maxTokens
+        case .maxCompletionTokens: body["max_completion_tokens"] = maxTokens
+        }
         if let temperature = options.temperature { body["temperature"] = temperature }
         if let topP = options.topP { body["top_p"] = topP }
         if !options.stopSequences.isEmpty { body["stop"] = options.stopSequences }
@@ -207,7 +230,7 @@ public struct AnthropicDirectProvider: CloudInferenceProvider {
     }
 
     private func makeRequest(model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, stream: Bool) async throws -> URLRequest {
-        guard let base = RouterValidation.validatedHTTPBase(baseURL),
+        guard let base = RouterValidation.validatedCloudBase(baseURL),
               let url = URL(string: "\(base)/v1/messages") else {
             throw AIRouterError.invalidEndpoint
         }

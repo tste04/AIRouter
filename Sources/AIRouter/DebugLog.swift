@@ -59,8 +59,14 @@ public enum DebugLog {
             guard let handle else { return }
             let line = "\(Date()): \(msg)\n"
             guard let data = line.data(using: .utf8) else { return }
-            handle.seekToEndOfFile()
-            handle.write(data)
+            // Throwing-Varianten statt seekToEndOfFile()/write(_:):
+            // Logging darf die App nie crashen (z. B. bei voller Platte).
+            do {
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+            } catch {
+                // Fehler beim Datei-Log still verwerfen; os.Logger lief bereits.
+            }
         }
     }
 }

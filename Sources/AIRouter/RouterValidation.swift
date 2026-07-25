@@ -29,10 +29,32 @@ enum RouterValidation {
         !value.isEmpty && value.allSatisfy { modelAllowed.contains($0) }
     }
 
-    /// Validiert eine HTTP-Basis-URL (Cloud-Provider-Endpoints): nur
-    /// `http`/`https` mit nicht-leerem Host, normalisiert ohne Trailing-Slash.
-    static func validatedHTTPBase(_ endpoint: String) -> String? {
-        validatedLocalEndpoint(endpoint)
+    /// Validiert eine Cloud-Provider-Basis-URL: nur `http`/`https` mit
+    /// nicht-leerem Host; `http://` (Klartext) ist zusaetzlich nur fuer
+    /// Loopback-/private Hosts erlaubt — API-Keys duerfen nicht unverschluesselt
+    /// an entfernte Hosts gehen. `allowInsecureHTTP` hebt die Regel explizit auf
+    /// (z. B. LAN-Hostname eines vLLM-Servers).
+    static func validatedCloudBase(_ endpoint: String, allowInsecureHTTP: Bool = false) -> String? {
+        guard let base = validatedLocalEndpoint(endpoint) else { return nil }
+        if base.lowercased().hasPrefix("http:") {
+            guard let url = URL(string: base), let host = url.host,
+                  allowInsecureHTTP || isPrivateOrLoopbackHost(host) else {
+                return nil
+            }
+        }
+        return base
+    }
+
+    /// Loopback, `.local`-mDNS und private RFC-1918-Bereiche.
+    static func isPrivateOrLoopbackHost(_ host: String) -> Bool {
+        let h = host.lowercased()
+        if h == "localhost" || h == "::1" || h.hasSuffix(".local") { return true }
+        if h.hasPrefix("127.") || h.hasPrefix("10.") || h.hasPrefix("192.168.") { return true }
+        if h.hasPrefix("172.") {
+            let parts = h.split(separator: ".")
+            if parts.count == 4, let second = Int(parts[1]), (16...31).contains(second) { return true }
+        }
+        return false
     }
 
     /// Validiert einen lokalen Inferenz-Endpoint: nur `http`/`https` mit
