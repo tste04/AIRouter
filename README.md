@@ -380,8 +380,10 @@ AIRouter ist **dual-lizenziert**:
 - **Nichtkommerzielle Nutzung** ist kostenlos unter der
   [PolyForm Noncommercial License 1.0.0](LICENSE.md).
 - **Kommerzielle Nutzung** (Einsatz im Unternehmen, Einbettung in ein Produkt,
-  Teil eines bezahlten Dienstes) erfordert eine kommerzielle Lizenz — siehe
-  [COMMERCIAL.md](COMMERCIAL.md).
+  Teil eines bezahlten Dienstes) erfordert eine kommerzielle Lizenz — Konditionen
+  auf Verhandlungsbasis, siehe [COMMERCIAL.md](COMMERCIAL.md).
+
+Kommerzielle Anfragen: **[hello@tstellmacher.com](mailto:hello@tstellmacher.com)**
 
 Copyright 2026 Tommy Stellmacher.
 

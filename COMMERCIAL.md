@@ -26,17 +26,19 @@ AIRouter ist keine „ein Modell, ein Provider"-Hilfsfunktion, sondern die
 | Circuit-Breaker & Retry-Policy | Ausfälle einzelner Modelle degradieren kontrolliert statt die App mitzureißen. |
 | Hybrid lokal/Cloud mit Energiemodi | Datenschutz-/Offline-Betrieb ohne separaten Code-Pfad. |
 
-## Editionen (indikativ)
+## Editionen
 
-| Edition | Für | Umfang | Preis (Richtwert) |
+| Edition | Für | Umfang | Konditionen |
 |---|---|---|---|
 | **Personal** | Einzelpersonen, nichtkommerziell | Alles in diesem Repo | Kostenlos (PolyForm NC) |
-| **Pro** | Freelancer & kommerzielle Einzelnutzung | Kommerzielle Lizenz, priorisierte Issues | €79 / Jahr |
-| **Team** | Unternehmen bis 25 Seats | Kommerzielle Lizenz, E-Mail-Support | €990 / Jahr |
-| **Enterprise / OEM** | Einbettung in Produkte, Compliance-Deployments | OEM-Lizenz, SLA, Roadmap-Einfluss | ab €25.000 / Jahr |
+| **Pro** | Freelancer & kommerzielle Einzelnutzung | Kommerzielle Lizenz, priorisierte Issues | Auf Anfrage |
+| **Team** | Unternehmen mit mehreren Seats | Kommerzielle Lizenz, E-Mail-Support | Auf Anfrage |
+| **Enterprise / OEM** | Einbettung in Produkte, Compliance-Deployments | OEM-Lizenz, SLA, Roadmap-Einfluss | Auf Anfrage |
 
-Preise sind bis zum ersten öffentlichen Release indikativ und können sich ändern;
-Early Adopters behalten ihre Stufe.
+Kommerzielle Konditionen werden **individuell auf Verhandlungsbasis** vereinbart —
+abhängig von Seat-Zahl, Nutzungsart (intern, Produkt-Einbettung, SaaS) und
+Support-Umfang. Frag einfach mit einer kurzen Beschreibung deines Einsatzes an;
+du erhältst ein passendes Angebot.
 
 ## Wie die Lizenzierung funktioniert
 
@@ -54,9 +56,12 @@ Aktivierungs-Calls, keine Telemetrie und keinen Kill-Switch**. Die Durchsetzung 
 
 ## Lizenz erhalten
 
-Öffne ein GitHub-Issue mit dem Titel `commercial license` in diesem Repository oder
-kontaktiere den Autor über das GitHub-Profil. Du erhältst eine kurze
-Lizenzvereinbarung und eine Rechnung — kein Call nötig, außer du möchtest einen.
+Schreib an **[hello@tstellmacher.com](mailto:hello@tstellmacher.com)** mit einer
+kurzen Beschreibung deines geplanten Einsatzes (interne Nutzung, Produkt-Einbettung
+oder SaaS; ungefähre Seat-Zahl). Alternativ: ein GitHub-Issue mit dem Titel
+`commercial license` in diesem Repository. Du erhältst ein Angebot auf
+Verhandlungsbasis und eine kurze Lizenzvereinbarung — kein Call nötig, außer du
+möchtest einen.
 
 ## FAQ
 
