@@ -11,10 +11,10 @@ public enum RoutingPolicy: String, Sendable, CaseIterable, Identifiable {
 
     public var displayName: String {
         switch self {
-        case .cloudOnly: "Nur Cloud"
-        case .preferCloud: "Bevorzugt Cloud"
-        case .preferLocal: "Bevorzugt Lokal"
-        case .localOnly: "Nur Lokal"
+        case .cloudOnly: return "Nur Cloud"
+        case .preferCloud: return "Bevorzugt Cloud"
+        case .preferLocal: return "Bevorzugt Lokal"
+        case .localOnly: return "Nur Lokal"
         }
     }
 }

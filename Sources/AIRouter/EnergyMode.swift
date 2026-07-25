@@ -15,28 +15,28 @@ public enum EnergyMode: String, CaseIterable, Identifiable, Sendable {
 
     public var displayName: String {
         switch self {
-        case .maxCloud: "Max Cloud"
-        case .fullPower: "Volle Kraft"
-        case .offline: "Offline"
-        case .powerSave: "Stromsparen"
+        case .maxCloud: return "Max Cloud"
+        case .fullPower: return "Volle Kraft"
+        case .offline: return "Offline"
+        case .powerSave: return "Stromsparen"
         }
     }
 
     public var description: String {
         switch self {
-        case .maxCloud: "Nur Cloud-Modelle, hochwertige Modelle, kurze Intervalle"
-        case .fullPower: "Cloud + lokale KI, Hintergrund-Enrichment aktiv"
-        case .offline: "Nur lokale KI, kein Netzwerk noetig"
-        case .powerSave: "KI nur bei Anfrage, kein Hintergrund, maximale Laufzeit"
+        case .maxCloud: return "Nur Cloud-Modelle, hochwertige Modelle, kurze Intervalle"
+        case .fullPower: return "Cloud + lokale KI, Hintergrund-Enrichment aktiv"
+        case .offline: return "Nur lokale KI, kein Netzwerk noetig"
+        case .powerSave: return "KI nur bei Anfrage, kein Hintergrund, maximale Laufzeit"
         }
     }
 
     public var icon: String {
         switch self {
-        case .maxCloud: "cloud.bolt.fill"
-        case .fullPower: "bolt.fill"
-        case .offline: "wifi.slash"
-        case .powerSave: "battery.25"
+        case .maxCloud: return "cloud.bolt.fill"
+        case .fullPower: return "bolt.fill"
+        case .offline: return "wifi.slash"
+        case .powerSave: return "battery.25"
         }
     }
 }

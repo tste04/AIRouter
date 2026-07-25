@@ -398,7 +398,7 @@ Details und Meldeweg für Schwachstellen: [SECURITY.md](SECURITY.md).
 ## Anforderungen
 
 - macOS 13+ / iOS 16+ (nutzt `ContinuousClock` und `os.Logger`)
-- Swift 5.9+
+- Swift 5.7+ (Xcode 14.1+)
 - Keine externen Abhängigkeiten
 
 ## Build & Test

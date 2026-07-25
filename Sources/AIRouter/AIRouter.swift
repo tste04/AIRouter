@@ -223,7 +223,10 @@ public actor AIRouter {
         var catalog = ModelCatalog.default
         catalog.merge(additionalModels)
         self.catalog = catalog
-        self.hourStartInstant = budgetClock.now
+        // Frische Instanz statt self.budgetClock: waehrend der Phase-1-
+        // Initialisierung darf self nicht gelesen werden; alle ContinuousClock-
+        // Instanzen messen dieselbe monotone Uhr.
+        self.hourStartInstant = ContinuousClock().now
     }
 
     // MARK: - Configuration

@@ -15,10 +15,10 @@ public enum DebugLog {
     private static let ioQueue = DispatchQueue(label: "com.airouter.debuglog", qos: .utility)
 
     /// Nur auf `ioQueue` zugreifen.
-    nonisolated(unsafe) private static var handle: FileHandle?
+    private static var handle: FileHandle?
 
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var enabled = true
+    private static var enabled = true
 
     /// Aktiviert das Schreiben in eine Logdatei am angegebenen Pfad.
     /// Uebergib `nil`, um das Datei-Logging zu deaktivieren.
