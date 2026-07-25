@@ -69,6 +69,12 @@ möchtest einen.
 
 **Nervt oder telefoniert die freie Version nach Hause?** Nein.
 
-**Beiträge?** Willkommen. Damit das Projekt als Ganzes lizenzierbar und
-verkaufbar bleibt (saubere Rechtekette), erfolgt die Einreichung unter Abtretung
-der nötigen Rechte an den Maintainer — Details klären wir pro Beitrag.
+**Beiträge?** Willkommen — sie erfordern das CLA
+([docs/CLA.md](docs/CLA.md), siehe [CONTRIBUTING.md](CONTRIBUTING.md)): du behältst
+dein Copyright und räumst dem Maintainer eine übertragbare, unwiderrufliche Lizenz
+ein — das hält das Projekt als Ganzes relicensierbar und verkaufbar (saubere
+Rechtekette).
+
+**Wie hängt das mit Engram zusammen?** AIRouter kann Teil der Engram-Distribution
+werden. Deren Distributionslizenz deckt die kommerzielle Nutzung der enthaltenen
+Komponenten im Rahmen der Distribution ab — Details in [LICENSING.md](LICENSING.md).

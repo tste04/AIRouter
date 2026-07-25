@@ -383,7 +383,15 @@ AIRouter ist **dual-lizenziert**:
   Teil eines bezahlten Dienstes) erfordert eine kommerzielle Lizenz — Konditionen
   auf Verhandlungsbasis, siehe [COMMERCIAL.md](COMMERCIAL.md).
 
+Die komponentenübergreifende Lizenz-Policy (Schichtenmodell, Distribution,
+Chain of Title) steht in [LICENSING.md](LICENSING.md).
+
 Kommerzielle Anfragen: **[hello@tstellmacher.com](mailto:hello@tstellmacher.com)**
 
 Copyright 2026 Tommy Stellmacher.
+
+## Beiträge
+
+Beiträge sind willkommen und erfordern das CLA ([docs/CLA.md](docs/CLA.md)) —
+Details in [CONTRIBUTING.md](CONTRIBUTING.md).
 
