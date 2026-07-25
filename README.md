@@ -11,6 +11,9 @@ Keine Auth-Strategie und kein Cloud-Projekt sind fest verdrahtet:
 Authentifizierung, lokales Backend und Modell-/Routing-Konfiguration werden
 vollständig von außen injiziert.
 
+**Lizenz:** PolyForm Noncommercial 1.0.0 — nichtkommerziell frei, kommerziell
+kostenpflichtig (siehe [Lizenz](#lizenz) / [COMMERCIAL.md](COMMERCIAL.md)).
+
 ## Funktionen
 
 | Bereich | Funktion |
@@ -369,4 +372,16 @@ Weitere Härtungen:
 swift build
 swift test   # 38 Tests, laufen komplett gegen Mocks — kein Netz, keine Credentials
 ```
+
+## Lizenz
+
+AIRouter ist **dual-lizenziert**:
+
+- **Nichtkommerzielle Nutzung** ist kostenlos unter der
+  [PolyForm Noncommercial License 1.0.0](LICENSE.md).
+- **Kommerzielle Nutzung** (Einsatz im Unternehmen, Einbettung in ein Produkt,
+  Teil eines bezahlten Dienstes) erfordert eine kommerzielle Lizenz — siehe
+  [COMMERCIAL.md](COMMERCIAL.md).
+
+Copyright 2026 Tommy Stellmacher.
 
