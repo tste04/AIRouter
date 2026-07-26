@@ -74,7 +74,7 @@ In `Package.swift`:
 oder als Git-Abhängigkeit (bis zum ersten getaggten Release über den Branch):
 
 ```swift
-.package(url: "https://github.com/rdtste/AIRouter.git", branch: "main")
+.package(url: "https://github.com/tste04/AIRouter.git", branch: "main")
 ```
 
 und im Target:
