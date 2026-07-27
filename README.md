@@ -71,10 +71,11 @@ In `Package.swift`:
 .package(path: "../AIRouter")
 ```
 
-oder als Git-Abhängigkeit:
+oder als Git-Abhängigkeit (Pre-Release; versionierte Tags folgen mit dem
+ersten Release):
 
 ```swift
-.package(url: "https://github.com/tste04/AIRouter.git", from: "1.0.0")
+.package(url: "https://github.com/tste04/AIRouter.git", branch: "main")
 ```
 
 und im Target:
