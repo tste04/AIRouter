@@ -71,6 +71,24 @@ private func token() -> AccessToken {
     AccessToken(value: "test-token", lifetime: 3600)
 }
 
+/// Standard-Router fuer Tests: feste Region/Projekt, Token-Provider, Mock-Transport.
+private func makeRouter(
+    transport: HTTPTransport,
+    taskModels: [AITask: String] = [:],
+    additionalModels: [String: ModelDescriptor] = [:],
+    retryPolicy: RetryPolicy = .default
+) -> AIRouter {
+    AIRouter(
+        vertexRegion: "us-central1",
+        vertexProject: "demo",
+        taskModels: taskModels,
+        accessTokenProvider: { token() },
+        transport: transport,
+        additionalModels: additionalModels,
+        retryPolicy: retryPolicy
+    )
+}
+
 final class AIRouterTests: XCTestCase {
 
     // MARK: - Static metadata
@@ -132,12 +150,7 @@ final class AIRouterTests: XCTestCase {
 
     func testSuccessfulCloudCallSettlesBudget() async throws {
         let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "hello", input: 7, output: 13))])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         let result = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
         XCTAssertEqual(result, "hello")
         let status = await router.budgetStatus()
@@ -173,13 +186,7 @@ final class AIRouterTests: XCTestCase {
             .init(status: 404, body: Data("not found".utf8)),
             .init(status: 200, body: anthropicBody(text: "fallback"))
         ])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            taskModels: [.factCheck: "claude-opus-4-6"],
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport, taskModels: [.factCheck: "claude-opus-4-6"])
         let result = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
         XCTAssertEqual(result, "fallback")
         XCTAssertEqual(transport.requestCount, 2)
@@ -187,13 +194,7 @@ final class AIRouterTests: XCTestCase {
 
     func testUnknownModelThrows() async {
         let transport = MockTransport(responses: [])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            taskModels: [.factCheck: "totally-unknown-model"],
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport, taskModels: [.factCheck: "totally-unknown-model"])
         do {
             _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
             XCTFail("Expected notConfigured error")
@@ -209,12 +210,7 @@ final class AIRouterTests: XCTestCase {
 
     func testUsageCallbackEmitted() async throws {
         let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "x", input: 3, output: 4))])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         let box = UsageBox()
         await router.setUsageCallback { info in box.store(info) }
         _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
@@ -226,12 +222,7 @@ final class AIRouterTests: XCTestCase {
 
     func testBudgetExhaustedThrowsBeforeNetwork() async {
         let transport = MockTransport(responses: [])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         await router.setHourlyBudget(10_000) // low-prio ceiling = 7.5k
         // factCheck is .low priority; maxTokens 8000 -> estimate ~8000 > 7500 ceiling.
         do {
@@ -296,14 +287,7 @@ final class AIRouterTests: XCTestCase {
 
     func testModelNameWithPathInjectionRejected() async {
         let transport = MockTransport(responses: [])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            taskModels: [.factCheck: "evil/../../model"],
-            accessTokenProvider: { token() },
-            transport: transport,
-            additionalModels: ["evil/../../model": ModelDescriptor(provider: .google)]
-        )
+        let router = makeRouter(transport: transport, taskModels: [.factCheck: "evil/../../model"], additionalModels: ["evil/../../model": ModelDescriptor(provider: .google)])
         do {
             _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
             XCTFail("Expected notConfigured error")
@@ -335,12 +319,7 @@ final class AIRouterTests: XCTestCase {
 
     func testRawModelSendCountsTowardBudget() async throws {
         let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "raw", input: 5, output: 9))])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         let result = try await router.send(model: "gemini-2.5-flash", system: "s", user: "u", maxTokens: 100)
         XCTAssertEqual(result, "raw")
         let status = await router.budgetStatus()
@@ -350,12 +329,7 @@ final class AIRouterTests: XCTestCase {
     func testApiErrorBodyIsCapped() async {
         let bigBody = String(repeating: "x", count: 5_000)
         let transport = MockTransport(responses: [.init(status: 400, body: Data(bigBody.utf8))])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         do {
             _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
             XCTFail("Expected apiError")
@@ -382,13 +356,7 @@ final class AIRouterTests: XCTestCase {
 
     func testMultiTurnMessagesInAnthropicBody() async throws {
         let transport = MockTransport(responses: [.init(status: 200, body: anthropicBody(text: "ok"))])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            taskModels: [.factCheck: "claude-sonnet-4-6"],
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport, taskModels: [.factCheck: "claude-sonnet-4-6"])
         let messages: [AIMessage] = [.user("Hallo"), .assistant("Hi!"), .user("Weiter")]
         _ = try await router.send(task: .factCheck, system: "s", messages: messages, maxTokens: 100)
 
@@ -401,12 +369,7 @@ final class AIRouterTests: XCTestCase {
 
     func testGenerationOptionsInGoogleBody() async throws {
         let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "ok"))])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         let options = GenerationOptions(temperature: 0.7, topP: 0.5, topK: 40, stopSequences: ["END"])
         _ = try await router.send(task: .factCheck, system: "s", messages: [.user("u")], maxTokens: 100, options: options)
 
@@ -426,12 +389,7 @@ final class AIRouterTests: XCTestCase {
             "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"lo\"}]}}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":2}}"
         ]
         let transport = MockTransport(responses: [], streamLines: lines)
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         var chunks: [String] = []
         for try await chunk in await router.sendStreaming(task: .factCheck, system: "s", user: "u") {
             chunks.append(chunk)
@@ -451,13 +409,7 @@ final class AIRouterTests: XCTestCase {
             "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":1}}"
         ]
         let transport = MockTransport(responses: [], streamLines: lines)
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            taskModels: [.factCheck: "claude-sonnet-4-6"],
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport, taskModels: [.factCheck: "claude-sonnet-4-6"])
         var chunks: [String] = []
         for try await chunk in await router.sendStreaming(task: .factCheck, system: "s", user: "u") {
             chunks.append(chunk)
@@ -473,12 +425,7 @@ final class AIRouterTests: XCTestCase {
 
     func testResponseCacheHitAvoidsSecondRequest() async throws {
         let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "cached"))])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         await router.enableResponseCache(tasks: [.factCheck])
         let first = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
         let second = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
@@ -492,12 +439,7 @@ final class AIRouterTests: XCTestCase {
             .init(status: 200, body: googleBody(text: "a")),
             .init(status: 200, body: googleBody(text: "b"))
         ])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
         _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
         XCTAssertEqual(transport.requestCount, 2)
@@ -511,13 +453,7 @@ final class AIRouterTests: XCTestCase {
             .init(status: 503, body: Data()),
             .init(status: 503, body: Data())
         ])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport,
-            retryPolicy: RetryPolicy(maxTransientRetries: 0, baseDelay: 0)
-        )
+        let router = makeRouter(transport: transport, retryPolicy: RetryPolicy(maxTransientRetries: 0, baseDelay: 0))
         for _ in 0..<3 {
             do {
                 _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
@@ -550,12 +486,7 @@ final class AIRouterTests: XCTestCase {
 
     func testCloudPreflightRedactsOutboundContent() async throws {
         let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "ok"))])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         await router.setCloudPreflight { text in
             text.replacingOccurrences(of: "SECRET", with: "[redacted]")
         }
@@ -570,12 +501,7 @@ final class AIRouterTests: XCTestCase {
 
     func testCostTelemetryFromCatalogPrices() async throws {
         let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "x", input: 100_000, output: 10_000))])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         let box = UsageBox()
         await router.setUsageCallback { info in box.store(info) }
         _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
@@ -690,12 +616,7 @@ final class AIRouterTests: XCTestCase {
 
     func testJsonModeInGoogleBody() async throws {
         let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "{}"))])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         _ = try await router.send(task: .factCheck, system: "s", messages: [.user("u")], maxTokens: 100, options: GenerationOptions(jsonMode: true))
         let body = jsonBody(of: transport.requests.first)
         let config = body["generationConfig"] as? [String: Any]
@@ -704,12 +625,7 @@ final class AIRouterTests: XCTestCase {
 
     func testCostBudgetThrottles() async throws {
         let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "x", input: 100_000, output: 10_000))])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         await router.setHourlyCostBudget(usd: 0.01)
         _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100) // Kosten: 0.055 USD
         do {
@@ -727,12 +643,7 @@ final class AIRouterTests: XCTestCase {
 
     func testModelStatsRecorded() async throws {
         let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "ok"))])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
         let stats = await router.modelStats()
         let flash = stats.first { $0.model == "gemini-2.5-flash" }
@@ -755,12 +666,7 @@ final class AIRouterTests: XCTestCase {
         // Grosser Input muss in die Reservierung einfliessen, auch wenn
         // maxTokens klein ist (~40k Zeichen ≈ 10k Tokens > 7.5k-Ceiling).
         let transport = MockTransport(responses: [])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         await router.setHourlyBudget(10_000)
         let hugeInput = String(repeating: "x", count: 40_000)
         do {
@@ -781,12 +687,7 @@ final class AIRouterTests: XCTestCase {
             .init(status: 200, body: googleBody(text: "big", input: 4_000, output: 4_000)),
             .init(status: 200, body: googleBody(text: "queued"))
         ])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         await router.setHourlyBudget(10_000)
         await router.overrideBudgetWindowForTesting(seconds: 1)
         await router.setQueueOnBudgetExhausted(true)
@@ -799,12 +700,7 @@ final class AIRouterTests: XCTestCase {
 
     func testConcurrencyLimitSerializesCloudCalls() async throws {
         let transport = GatedTransport(body: googleBody(text: "ok"))
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         await router.setMaxConcurrentCloudCalls(1)
         let first = Task { try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100) }
         let second = Task { try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100) }
@@ -823,13 +719,7 @@ final class AIRouterTests: XCTestCase {
             .init(status: 503, body: Data()),
             .init(status: 200, body: googleBody(text: "recovered"))
         ])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport,
-            retryPolicy: RetryPolicy(maxTransientRetries: 0, baseDelay: 0)
-        )
+        let router = makeRouter(transport: transport, retryPolicy: RetryPolicy(maxTransientRetries: 0, baseDelay: 0))
         await router.overrideBreakerCooldownForTesting(seconds: 0.1)
         for _ in 0..<3 {
             _ = try? await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
@@ -844,12 +734,7 @@ final class AIRouterTests: XCTestCase {
             .init(status: 200, body: googleBody(text: "a")),
             .init(status: 200, body: googleBody(text: "b"))
         ])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         await router.enableResponseCache(tasks: [.factCheck], ttlSeconds: 0.1)
         let first = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
         try await Task.sleep(for: .milliseconds(250))
@@ -867,12 +752,7 @@ final class AIRouterTests: XCTestCase {
             .init(status: 200, body: ollamaBody),
             .init(status: 200, body: ollamaBody)
         ])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         await router.configureLocalLLM(endpoint: "http://localhost:11434", model: "gemma3")
         await router.setHourlyBudget(10_000)
         await router.enableResponseCache(tasks: [.factCheck])
@@ -941,12 +821,7 @@ final class AIRouterTests: XCTestCase {
 
     func testStoragePersistsAfterSettle() async throws {
         let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "x", input: 7, output: 13))])
-        let router = AIRouter(
-            vertexRegion: "us-central1",
-            vertexProject: "demo",
-            accessTokenProvider: { token() },
-            transport: transport
-        )
+        let router = makeRouter(transport: transport)
         let storage = MemoryStorage(initial: nil)
         await router.configureStorage(storage)
         _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
