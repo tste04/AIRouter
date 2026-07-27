@@ -142,8 +142,7 @@ public struct OpenAICompatibleProvider: CloudInferenceProvider {
         let request = try await makeRequest(model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, stream: false)
         let (data, http) = try await transport.data(for: request)
         guard (200...299).contains(http.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw AIRouterError.apiError(http.statusCode, String(body.prefix(500)))
+            throw AIRouterError.api(http.statusCode, data: data)
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
@@ -164,21 +163,14 @@ public struct OpenAICompatibleProvider: CloudInferenceProvider {
         let request = try await makeRequest(model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, stream: true)
         let (lines, http) = try await transport.lines(for: request)
         guard (200...299).contains(http.statusCode) else {
-            throw AIRouterError.apiError(http.statusCode, "Streaming request failed")
+            throw AIRouterError.apiError(http.statusCode, "Streaming-Request fehlgeschlagen")
         }
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     for try await line in lines {
                         try Task.checkCancellation()
-                        let trimmed = line.trimmingCharacters(in: .whitespaces)
-                        guard trimmed.hasPrefix("data:") else { continue }
-                        let payload = trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                        if payload == "[DONE]" { break }
-                        guard let data = payload.data(using: .utf8),
-                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                            continue
-                        }
+                        guard let json = SSE.jsonPayload(from: line) else { continue }
                         if let choices = json["choices"] as? [[String: Any]],
                            let delta = choices.first?["delta"] as? [String: Any],
                            let text = delta["content"] as? String, !text.isEmpty {
@@ -261,8 +253,7 @@ public struct AnthropicDirectProvider: CloudInferenceProvider {
         let request = try await makeRequest(model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, stream: false)
         let (data, http) = try await transport.data(for: request)
         guard (200...299).contains(http.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw AIRouterError.apiError(http.statusCode, String(body.prefix(500)))
+            throw AIRouterError.api(http.statusCode, data: data)
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let content = json["content"] as? [[String: Any]],
@@ -282,7 +273,7 @@ public struct AnthropicDirectProvider: CloudInferenceProvider {
         let request = try await makeRequest(model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, stream: true)
         let (lines, http) = try await transport.lines(for: request)
         guard (200...299).contains(http.statusCode) else {
-            throw AIRouterError.apiError(http.statusCode, "Streaming request failed")
+            throw AIRouterError.apiError(http.statusCode, "Streaming-Request fehlgeschlagen")
         }
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -290,33 +281,16 @@ public struct AnthropicDirectProvider: CloudInferenceProvider {
                     var inputTokens = 0
                     for try await line in lines {
                         try Task.checkCancellation()
-                        let trimmed = line.trimmingCharacters(in: .whitespaces)
-                        guard trimmed.hasPrefix("data:") else { continue }
-                        let payload = trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                        guard !payload.isEmpty,
-                              let data = payload.data(using: .utf8),
-                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                            continue
+                        guard let json = SSE.jsonPayload(from: line) else { continue }
+                        let event = AnthropicStreamEvent(json: json)
+                        if let text = event.text {
+                            continuation.yield(.text(text))
                         }
-                        switch json["type"] as? String {
-                        case "content_block_delta":
-                            if let delta = json["delta"] as? [String: Any],
-                               let text = delta["text"] as? String, !text.isEmpty {
-                                continuation.yield(.text(text))
-                            }
-                        case "message_start":
-                            if let message = json["message"] as? [String: Any],
-                               let usage = message["usage"] as? [String: Any],
-                               let input = usage["input_tokens"] as? Int {
-                                inputTokens = input
-                            }
-                        case "message_delta":
-                            if let usage = json["usage"] as? [String: Any],
-                               let output = usage["output_tokens"] as? Int {
-                                continuation.yield(.usage(input: inputTokens, output: output))
-                            }
-                        default:
-                            break
+                        if let input = event.inputTokens {
+                            inputTokens = input
+                        }
+                        if let output = event.outputTokens {
+                            continuation.yield(.usage(input: inputTokens, output: output))
                         }
                     }
                     continuation.finish()

@@ -92,6 +92,8 @@ public actor AIRouter {
     private var airplaneMode: Bool = false
     private var energyMode: EnergyMode = .fullPower
     private var localProvider: LocalInferenceProvider?
+    /// Ollama-Modell-Discovery; austauschbar (z. B. fuer Tests), Default `.shared`.
+    var ollamaDiscovery: OllamaService = .shared
 
     private let cloudTimeout: TimeInterval = 60
     private let localTimeout: TimeInterval = 120
@@ -223,9 +225,8 @@ public actor AIRouter {
         var catalog = ModelCatalog.default
         catalog.merge(additionalModels)
         self.catalog = catalog
-        // Frische Instanz statt self.budgetClock: waehrend der Phase-1-
-        // Initialisierung darf self nicht gelesen werden; alle ContinuousClock-
-        // Instanzen messen dieselbe monotone Uhr.
+        // Alle ContinuousClock-Instanzen messen dieselbe monotone Uhr;
+        // self.budgetClock ist in Phase 1 der Initialisierung nicht lesbar.
         self.hourStartInstant = ContinuousClock().now
     }
 
@@ -245,7 +246,7 @@ public actor AIRouter {
         // Kein Modell gewaehlt -> automatisch ein installiertes Ollama-Modell entdecken.
         var resolved = model
         if resolved.isEmpty && !sanitizedEndpoint.isEmpty {
-            let available = await OllamaService.shared.fetchModels(endpoint: sanitizedEndpoint)
+            let available = await ollamaDiscovery.fetchModels(endpoint: sanitizedEndpoint)
             resolved = available.first(where: { $0.name.lowercased().contains("gemma") })?.name
                 ?? available.first(where: { $0.name.lowercased().contains("qwen") })?.name
                 ?? available.first?.name
@@ -486,8 +487,7 @@ public actor AIRouter {
             let result = try await callVertex(model: effectiveModel, system: system, messages: messages, maxTokens: maxTokens, options: options, task: nil)
             releaseCloudSlot()
             resetHourIfNeeded()
-            tokensUsedThisHour += result.inputTokens + result.outputTokens
-            persistBudget()
+            settleBudget(reserved: 0, actual: result.inputTokens + result.outputTokens)
             return result.text
         } catch {
             releaseCloudSlot()
@@ -668,8 +668,7 @@ public actor AIRouter {
     }
 
     /// Budget-Schaetzung fuer eine Anfrage: Input (System + Verlauf, ~4 Zeichen
-    /// pro Token) plus maximale Output-Tokens. Vorher wurde der Input komplett
-    /// ignoriert — grosse Prompts liefen am Reservierungs-Budget vorbei.
+    /// pro Token) plus maximale Output-Tokens.
     private func estimatedRequestTokens(system: String, messages: [AIMessage], maxTokens: Int) -> Int {
         let inputChars = system.count + messages.reduce(0) { $0 + $1.content.count }
         return inputChars / 4 + maxTokens
@@ -773,6 +772,21 @@ public actor AIRouter {
         return url
     }
 
+    /// Baut den kompletten Vertex-Request (Endpoint, Auth, Header, Body) —
+    /// eine Stelle fuer den synchronen und den streamenden Pfad.
+    private func vertexRequest(model: String, provider: ModelDescriptor.Provider, streaming: Bool, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions) async throws -> URLRequest {
+        let url = try vertexEndpoint(model: model, provider: provider, streaming: streaming)
+        let accessToken = try await getAccessToken()
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = options.requestTimeout ?? cloudTimeout
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(
+            withJSONObject: Self.vertexBody(provider: provider, system: system, messages: messages, maxTokens: maxTokens, options: options, stream: streaming && provider == .anthropic))
+        return request
+    }
+
     private static func vertexBody(provider: ModelDescriptor.Provider, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, stream: Bool = false) -> [String: Any] {
         switch provider {
         case .anthropic:
@@ -824,8 +838,7 @@ public actor AIRouter {
         }
 
         // Preflight (z. B. PII-Redaktion) einmalig vor dem Versand anwenden.
-        let outboundSystem = cloudPreflight.map { $0(system) } ?? system
-        let outboundMessages = preflightedMessages(messages)
+        let (outboundSystem, outboundMessages) = preflightedOutbound(system: system, messages: messages)
 
         var currentModel = model
         var transientAttempts = 0
@@ -847,16 +860,7 @@ public actor AIRouter {
             }
 
             let descriptor = try descriptor(for: currentModel)
-            let url = try vertexEndpoint(model: currentModel, provider: descriptor.provider)
-            let accessToken = try await getAccessToken()
-
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.timeoutInterval = options.requestTimeout ?? cloudTimeout
-            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONSerialization.data(
-                withJSONObject: Self.vertexBody(provider: descriptor.provider, system: outboundSystem, messages: outboundMessages, maxTokens: maxTokens, options: options))
+            let request = try await vertexRequest(model: currentModel, provider: descriptor.provider, streaming: false, system: outboundSystem, messages: outboundMessages, maxTokens: maxTokens, options: options)
 
             let start = clock.now
             let (data, http): (Data, HTTPURLResponse)
@@ -885,31 +889,28 @@ public actor AIRouter {
 
             case 404:
                 // Modell-Fallback verbraucht KEINEN transienten Retry.
-                let body = String(data: data, encoding: .utf8) ?? ""
                 if let fallback = descriptor.fallsBackTo, fallback != currentModel {
                     DebugLog.write("[AIRouter] Modell \(currentModel) nicht gefunden, Fallback zu \(fallback)")
                     currentModel = fallback
                     continue
                 }
-                throw AIRouterError.apiError(404, String(body.prefix(500)))
+                throw AIRouterError.api(404, data: data)
 
             case 429 where transientAttempts < retryPolicy.maxTransientRetries,
                  500...599 where transientAttempts < retryPolicy.maxTransientRetries:
                 transientAttempts += 1
                 let body = String(data: data, encoding: .utf8) ?? ""
-                DebugLog.write("[AIRouter] HTTP \(http.statusCode) for \(currentModel) (retry \(transientAttempts)): \(body.prefix(120))")
+                DebugLog.write("[AIRouter] HTTP \(http.statusCode) fuer \(currentModel) (Retry \(transientAttempts)): \(body.prefix(120))")
                 try await Task.sleep(for: .seconds(Self.backoffDelay(policy: retryPolicy, attempt: transientAttempts)))
                 continue
 
             default:
                 let body = String(data: data, encoding: .utf8) ?? ""
-                DebugLog.write("[AIRouter] HTTP \(http.statusCode) for \(currentModel): \(body.prefix(200))")
-                if http.statusCode == 429 || (500...599).contains(http.statusCode) {
+                DebugLog.write("[AIRouter] HTTP \(http.statusCode) fuer \(currentModel): \(body.prefix(200))")
+                if isTransientStatus(http.statusCode) {
                     recordFailure(currentModel)
                 }
-                // Body begrenzen: keine unbegrenzten Fremd-Antworten in Fehlern
-                // (und damit in Logs/Telemetrie der aufrufenden App) halten.
-                throw AIRouterError.apiError(http.statusCode, String(body.prefix(500)))
+                throw AIRouterError.api(http.statusCode, data: data)
             }
         }
     }
@@ -933,19 +934,9 @@ public actor AIRouter {
             throw AIRouterError.notConfigured("Vertex AI Project nicht konfiguriert")
         }
 
-        let outboundSystem = cloudPreflight.map { $0(system) } ?? system
-        let outboundMessages = preflightedMessages(messages)
+        let (outboundSystem, outboundMessages) = preflightedOutbound(system: system, messages: messages)
 
-        let url = try vertexEndpoint(model: model, provider: desc.provider, streaming: true)
-        let accessToken = try await getAccessToken()
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = options.requestTimeout ?? cloudTimeout
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(
-            withJSONObject: Self.vertexBody(provider: desc.provider, system: outboundSystem, messages: outboundMessages, maxTokens: maxTokens, options: options, stream: desc.provider == .anthropic))
+        let request = try await vertexRequest(model: model, provider: desc.provider, streaming: true, system: outboundSystem, messages: outboundMessages, maxTokens: maxTokens, options: options)
 
         let clock = ContinuousClock()
         let start = clock.now
@@ -962,7 +953,7 @@ public actor AIRouter {
             if http.statusCode == 429 || (500...599).contains(http.statusCode) {
                 recordFailure(model)
             }
-            throw AIRouterError.apiError(http.statusCode, "Streaming request failed")
+            throw AIRouterError.apiError(http.statusCode, "Streaming-Request fehlgeschlagen")
         }
 
         var inputTokens = 0
@@ -971,37 +962,16 @@ public actor AIRouter {
 
         for try await line in lines {
             try Task.checkCancellation()
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("data:") else { continue }
-            let payload = trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces)
-            guard !payload.isEmpty, payload != "[DONE]",
-                  let data = payload.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                continue
-            }
+            guard let json = SSE.jsonPayload(from: line) else { continue }
             switch desc.provider {
             case .anthropic:
-                switch json["type"] as? String {
-                case "content_block_delta":
-                    if let delta = json["delta"] as? [String: Any],
-                       let text = delta["text"] as? String, !text.isEmpty {
-                        charCount += text.count
-                        continuation.yield(text)
-                    }
-                case "message_start":
-                    if let message = json["message"] as? [String: Any],
-                       let usage = message["usage"] as? [String: Any],
-                       let input = usage["input_tokens"] as? Int {
-                        inputTokens = input
-                    }
-                case "message_delta":
-                    if let usage = json["usage"] as? [String: Any],
-                       let output = usage["output_tokens"] as? Int {
-                        outputTokens = output
-                    }
-                default:
-                    break
+                let event = AnthropicStreamEvent(json: json)
+                if let text = event.text {
+                    charCount += text.count
+                    continuation.yield(text)
                 }
+                if let input = event.inputTokens { inputTokens = input }
+                if let output = event.outputTokens { outputTokens = output }
             case .google:
                 if let candidates = json["candidates"] as? [[String: Any]],
                    let first = candidates.first,
@@ -1046,8 +1016,7 @@ public actor AIRouter {
     /// gelten Breaker, Retry-Policy, Preflight und Telemetrie wie bei Vertex.
     private func callCustom(providerID: String, model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, task: AITask?) async throws -> CallResult {
         let provider = try customProvider(for: providerID)
-        let outboundSystem = cloudPreflight.map { $0(system) } ?? system
-        let outboundMessages = preflightedMessages(messages)
+        let (outboundSystem, outboundMessages) = preflightedOutbound(system: system, messages: messages)
 
         var transientAttempts = 0
         let clock = ContinuousClock()
@@ -1071,7 +1040,7 @@ public actor AIRouter {
                 if case .apiError(let status, let body) = error, isTransientStatus(status) {
                     if transientAttempts < retryPolicy.maxTransientRetries {
                         transientAttempts += 1
-                        DebugLog.write("[AIRouter] HTTP \(status) for \(model) via '\(providerID)' (retry \(transientAttempts)): \(body.prefix(120))")
+                        DebugLog.write("[AIRouter] HTTP \(status) fuer \(model) via '\(providerID)' (Retry \(transientAttempts)): \(body.prefix(120))")
                         try await Task.sleep(for: .seconds(Self.backoffDelay(policy: retryPolicy, attempt: transientAttempts)))
                         continue
                     }
@@ -1089,8 +1058,7 @@ public actor AIRouter {
     /// ein teilweise konsumierter Stream ist nicht wiederholbar).
     private func streamCustom(providerID: String, model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, task: AITask?, continuation: AsyncThrowingStream<String, Error>.Continuation) async throws -> (input: Int, output: Int) {
         let provider = try customProvider(for: providerID)
-        let outboundSystem = cloudPreflight.map { $0(system) } ?? system
-        let outboundMessages = preflightedMessages(messages)
+        let (outboundSystem, outboundMessages) = preflightedOutbound(system: system, messages: messages)
 
         let clock = ContinuousClock()
         let start = clock.now
@@ -1256,8 +1224,7 @@ public actor AIRouter {
         let elapsed = clock.now - start
 
         guard (200...299).contains(http.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw AIRouterError.apiError(http.statusCode, String(body.prefix(500)))
+            throw AIRouterError.api(http.statusCode, data: data)
         }
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1312,7 +1279,7 @@ public actor AIRouter {
         let start = clock.now
         let (lines, http) = try await localTransport.lines(for: request)
         guard (200...299).contains(http.statusCode) else {
-            throw AIRouterError.apiError(http.statusCode, "Streaming request failed")
+            throw AIRouterError.apiError(http.statusCode, "Streaming-Request fehlgeschlagen")
         }
 
         var inputTokens = 0
@@ -1493,9 +1460,11 @@ public actor AIRouter {
 
     // MARK: - Telemetry helpers
 
-    private func preflightedMessages(_ messages: [AIMessage]) -> [AIMessage] {
-        guard let hook = cloudPreflight else { return messages }
-        return messages.map { AIMessage(role: $0.role, content: hook($0.content)) }
+    /// Wendet den Preflight-Hook (z. B. PII-Redaktion) auf ausgehende
+    /// Cloud-Inhalte an — eine Stelle fuer alle Cloud-Pfade.
+    private func preflightedOutbound(system: String, messages: [AIMessage]) -> (system: String, messages: [AIMessage]) {
+        guard let hook = cloudPreflight else { return (system, messages) }
+        return (hook(system), messages.map { AIMessage(role: $0.role, content: hook($0.content)) })
     }
 
     private func estimatedCost(model: String, input: Int, output: Int) -> Double? {

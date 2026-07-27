@@ -26,3 +26,12 @@ public enum AIRouterError: LocalizedError {
         }
     }
 }
+
+extension AIRouterError {
+    /// Baut einen API-Fehler mit auf 500 Zeichen gekapptem Response-Body —
+    /// keine unbegrenzten Fremd-Antworten in Fehlern und Logs.
+    static func api(_ status: Int, data: Data) -> AIRouterError {
+        let body = String(data: data, encoding: .utf8) ?? ""
+        return .apiError(status, String(body.prefix(500)))
+    }
+}
