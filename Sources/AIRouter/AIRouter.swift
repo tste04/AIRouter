@@ -242,7 +242,11 @@ public actor AIRouter {
 
     // MARK: - Configuration
 
-    public func configureLocalLLM(endpoint: String, model: String, numCtx: Int = 4096) async {
+    /// Konfiguriert das Ollama-Backend. Liefert `true`, wenn ein gueltiger
+    /// Endpoint uebernommen wurde; `false` bei verworfenem Endpoint (nur
+    /// http/https mit Host erlaubt) oder wenn ein neuerer Aufruf zuvorkam.
+    @discardableResult
+    public func configureLocalLLM(endpoint: String, model: String, numCtx: Int = 4096) async -> Bool {
         // Nur http/https mit Host akzeptieren — verhindert, dass ein fehlerhaft
         // oder boeswillig konfigurierter "lokaler" Endpoint Prompts an ein
         // unerwartetes Ziel (file://, fehlgeformte URL, ...) leitet.
@@ -269,7 +273,7 @@ public actor AIRouter {
         // Endpoint und Modell erst NACH der Discovery gemeinsam setzen —
         // waehrend des await darf kein Aufrufer einen Endpoint ohne Modell sehen.
         // Und nur, wenn kein neuerer configure-Aufruf dazwischenkam.
-        guard generation == localConfigGeneration else { return }
+        guard generation == localConfigGeneration else { return false }
         self.localLLMNumCtx = max(512, numCtx)
         self.localLLMEndpoint = sanitizedEndpoint
         self.localLLMModel = resolved
@@ -277,6 +281,7 @@ public actor AIRouter {
         if !sanitizedEndpoint.isEmpty {
             DebugLog.write("[AIRouter] Local LLM konfiguriert: \(sanitizedEndpoint) (\(resolved.isEmpty ? "kein Modell" : resolved), num_ctx=\(self.localLLMNumCtx))")
         }
+        return !sanitizedEndpoint.isEmpty
     }
 
     /// Konfiguriert einen In-Process-Anbieter lokaler Inferenz.
@@ -287,12 +292,22 @@ public actor AIRouter {
 
     public func isLocalModelReady() async -> Bool {
         if let provider = localProvider, await provider.isReady { return true }
-        return !localLLMEndpoint.isEmpty
+        // Ein Endpoint ohne aufgeloestes Modell kann keinen Aufruf bedienen.
+        return !localLLMEndpoint.isEmpty && !localLLMModel.isEmpty
     }
 
     public func localLLMEndpointValue() -> String {
         localLLMEndpoint
     }
+
+    /// Aktueller Energiemodus (Gegenstueck zu ``setEnergyMode(_:)``).
+    public var currentEnergyMode: EnergyMode { energyMode }
+
+    /// Ob der Flugmodus aktiv ist (Gegenstueck zu ``setAirplaneMode(_:)``).
+    public var isAirplaneMode: Bool { airplaneMode }
+
+    /// Das konfigurierte bzw. automatisch entdeckte lokale Modell (leer = keins).
+    public var localModelName: String { localLLMModel }
 
     public func setUsageCallback(_ callback: @escaping @Sendable (AIUsageInfo) -> Void) {
         self.usageCallback = callback
