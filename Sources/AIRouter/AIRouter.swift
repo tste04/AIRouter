@@ -112,6 +112,10 @@ public actor AIRouter {
     var hourlyTokenBudget: Int = 200_000
     var tokensUsedThisHour: Int = 0
     var reservedTokens: Int = 0
+    var reservedCostUSD: Double = 0
+    /// Fenster-Generation: schuetzt Settle/Release ueber Fenstergrenzen hinweg
+    /// (siehe ``BudgetReservation``).
+    var budgetEpoch: UInt64 = 0
     var currentHourStart: Date = Date()
     /// Monotone Uhr fuer Budget-Reset, Circuit-Breaker und Cache-TTL: Wanduhr-
     /// Spruenge (NTP, manuelle Zeitumstellung) koennen weder Budgets vorzeitig
@@ -487,7 +491,7 @@ public actor AIRouter {
             let result = try await callVertex(model: effectiveModel, system: system, messages: messages, maxTokens: maxTokens, options: options, task: nil)
             releaseCloudSlot()
             resetHourIfNeeded()
-            settleBudget(reserved: 0, actual: result.inputTokens + result.outputTokens)
+            settleBudget(BudgetReservation(tokens: 0, costUSD: 0, epoch: budgetEpoch), actualTokens: result.inputTokens + result.outputTokens)
             return result.text
         } catch {
             releaseCloudSlot()

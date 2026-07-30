@@ -3,42 +3,54 @@ import Foundation
 extension AIRouter {
     // MARK: - Cloud orchestration with budget
 
+    /// Geschaetzte Kosten einer Anfrage fuer die USD-Reservierung: Input-Anteil
+    /// der Token-Schaetzung zu Input-Preisen, maxTokens zu Output-Preisen.
+    func estimatedRequestCostUSD(model: String, estimate: Int, maxTokens: Int) -> Double {
+        estimatedCost(model: model, input: max(0, estimate - maxTokens), output: maxTokens) ?? 0
+    }
+
     func runCloud(task: AITask, model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, estimate: Int) async throws -> String {
-        try reserveBudget(task: task, estimatedTokens: estimate)
+        let reservation = try reserveBudget(
+            task: task,
+            estimatedTokens: estimate,
+            estimatedCostUSD: estimatedRequestCostUSD(model: model, estimate: estimate, maxTokens: maxTokens))
         do {
             try await acquireCloudSlot()
         } catch {
-            releaseReservation(estimate)
+            releaseReservation(reservation)
             throw error
         }
         do {
             let result = try await callVertex(model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, task: task)
             releaseCloudSlot()
-            settleBudget(reserved: estimate, actual: result.inputTokens + result.outputTokens)
+            settleBudget(reservation, actualTokens: result.inputTokens + result.outputTokens)
             return result.text
         } catch {
             releaseCloudSlot()
-            releaseReservation(estimate)
+            releaseReservation(reservation)
             throw error
         }
     }
 
     func streamCloud(task: AITask, model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, continuation: AsyncThrowingStream<String, Error>.Continuation) async throws {
         let estimate = estimatedRequestTokens(system: system, messages: messages, maxTokens: maxTokens)
-        try reserveBudget(task: task, estimatedTokens: estimate)
+        let reservation = try reserveBudget(
+            task: task,
+            estimatedTokens: estimate,
+            estimatedCostUSD: estimatedRequestCostUSD(model: model, estimate: estimate, maxTokens: maxTokens))
         do {
             try await acquireCloudSlot()
         } catch {
-            releaseReservation(estimate)
+            releaseReservation(reservation)
             throw error
         }
         do {
             let usage = try await streamVertex(model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, task: task, continuation: continuation)
             releaseCloudSlot()
-            settleBudget(reserved: estimate, actual: usage.input + usage.output)
+            settleBudget(reservation, actualTokens: usage.input + usage.output)
         } catch {
             releaseCloudSlot()
-            releaseReservation(estimate)
+            releaseReservation(reservation)
             throw error
         }
     }

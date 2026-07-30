@@ -828,6 +828,44 @@ final class AIRouterTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(100)) // fire-and-forget Save abwarten
         XCTAssertEqual(storage.current?.tokensUsed, 20)
     }
+
+    // MARK: - Budget-Reservierung (Epoche & USD)
+
+    func testBudgetEpochProtectsNewWindowReservations() async throws {
+        let router = AIRouter(vertexRegion: "us-central1", vertexProject: "demo")
+        await router.overrideBudgetWindowForTesting(seconds: 0.05)
+        let old = try await router.reserveBudget(task: .factCheck, estimatedTokens: 5_000)
+        try await Task.sleep(for: .milliseconds(120))
+        // Fenster abgelaufen: naechste Reservierung erzwingt Reset + neue Epoche.
+        let fresh = try await router.reserveBudget(task: .factCheck, estimatedTokens: 7_000)
+        XCTAssertNotEqual(old.epoch, fresh.epoch)
+        // Settle der alten Reservierung darf die neue nicht anfassen.
+        await router.settleBudget(old, actualTokens: 100)
+        let status = await router.budgetStatus()
+        XCTAssertEqual(status.tokensReserved, 7_000, "Stale-Settle darf neue Reservierungen nicht reduzieren")
+        XCTAssertEqual(status.tokensUsed, 100)
+        await router.releaseReservation(fresh)
+        let cleared = await router.budgetStatus()
+        XCTAssertEqual(cleared.tokensReserved, 0)
+    }
+
+    func testCostBudgetCountsInFlightReservations() async throws {
+        let router = AIRouter(vertexRegion: "us-central1", vertexProject: "demo")
+        await router.setHourlyCostBudget(usd: 0.05)
+        // Erste Reservierung passt unters Ceiling …
+        _ = try await router.reserveBudget(task: .factCheck, estimatedTokens: 100, estimatedCostUSD: 0.04)
+        // … die zweite muss an settled + in-flight scheitern (0.04 + 0.04 > 0.05).
+        do {
+            _ = try await router.reserveBudget(task: .factCheck, estimatedTokens: 100, estimatedCostUSD: 0.04)
+            XCTFail("Expected budgetExhausted")
+        } catch let error as AIRouterError {
+            guard case .budgetExhausted = error else {
+                return XCTFail("Expected budgetExhausted, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
 }
 
 // MARK: - Test-Provider & -Storage

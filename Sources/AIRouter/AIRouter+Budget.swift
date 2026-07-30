@@ -3,17 +3,37 @@ import Foundation
 extension AIRouter {
     // MARK: - Budget internals
 
-    func reserveBudget(task: AITask, estimatedTokens: Int) throws {
+    /// Eine aktive Budget-Reservierung: Tokens plus geschaetzte Kosten, gebunden
+    /// an die Fenster-Epoche, in der sie angelegt wurde. Settle/Release aus einem
+    /// bereits zurueckgesetzten Fenster duerfen die Zaehler des neuen Fensters
+    /// nicht beruehren — sonst werden Reservierungen anderer Aufrufe unterschlagen
+    /// und das Budget ueberbucht.
+    struct BudgetReservation {
+        let tokens: Int
+        let costUSD: Double
+        let epoch: UInt64
+    }
+
+    /// Reserviert Token- UND Kosten-Budget (USD, aus Katalog-Preisen geschaetzt).
+    /// `critical` umgeht die Ceilings, reserviert aber trotzdem, damit andere
+    /// Aufrufer die Auslastung sehen.
+    func reserveBudget(task: AITask, estimatedTokens: Int, estimatedCostUSD: Double = 0) throws -> BudgetReservation {
         resetHourIfNeeded()
+        let reservation = BudgetReservation(tokens: estimatedTokens, costUSD: estimatedCostUSD, epoch: budgetEpoch)
         if task.priority == .critical {
             reservedTokens += estimatedTokens
-            return
+            reservedCostUSD += estimatedCostUSD
+            return reservation
         }
-        // Kosten-Grenze (USD) zusaetzlich zum Token-Budget.
-        if let costCeiling = hourlyCostBudgetUSD, costThisHourUSD >= costCeiling {
-            throttledTasks += 1
-            DebugLog.write("[AIRouter] Kosten-Budget erreicht (\(costThisHourUSD) >= \(costCeiling) USD): \(task.rawValue) aufgeschoben")
-            throw AIRouterError.budgetExhausted(task: task.rawValue)
+        // Kosten-Grenze (USD): settled + in-flight-reserviert + neu gegen das Ceiling —
+        // sonst passieren N parallele Aufrufe die Pruefung, bevor der erste abrechnet.
+        if let costCeiling = hourlyCostBudgetUSD {
+            let projectedCost = costThisHourUSD + reservedCostUSD + estimatedCostUSD
+            guard projectedCost <= costCeiling else {
+                throttledTasks += 1
+                DebugLog.write("[AIRouter] Kosten-Budget erreicht (\(projectedCost) > \(costCeiling) USD): \(task.rawValue) aufgeschoben")
+                throw AIRouterError.budgetExhausted(task: task.rawValue)
+            }
         }
         let projected = tokensUsedThisHour + reservedTokens + estimatedTokens
         let ceiling: Int
@@ -31,22 +51,31 @@ extension AIRouter {
             throw AIRouterError.budgetExhausted(task: task.rawValue)
         }
         reservedTokens += estimatedTokens
+        reservedCostUSD += estimatedCostUSD
+        return reservation
     }
 
-    func settleBudget(reserved estimatedTokens: Int, actual: Int) {
-        reservedTokens = max(0, reservedTokens - estimatedTokens)
-        tokensUsedThisHour += actual
+    func settleBudget(_ reservation: BudgetReservation, actualTokens: Int) {
+        if reservation.epoch == budgetEpoch {
+            reservedTokens = max(0, reservedTokens - reservation.tokens)
+            reservedCostUSD = max(0, reservedCostUSD - reservation.costUSD)
+        }
+        tokensUsedThisHour += actualTokens
         persistBudget()
     }
 
-    func releaseReservation(_ estimatedTokens: Int) {
-        reservedTokens = max(0, reservedTokens - estimatedTokens)
+    func releaseReservation(_ reservation: BudgetReservation) {
+        guard reservation.epoch == budgetEpoch else { return }
+        reservedTokens = max(0, reservedTokens - reservation.tokens)
+        reservedCostUSD = max(0, reservedCostUSD - reservation.costUSD)
     }
 
     func resetHourIfNeeded() {
         if budgetClock.now - hourStartInstant >= budgetWindow {
             tokensUsedThisHour = 0
             reservedTokens = 0
+            reservedCostUSD = 0
+            budgetEpoch += 1
             currentHourStart = Date()
             hourStartInstant = budgetClock.now
             costThisHourUSD = 0
