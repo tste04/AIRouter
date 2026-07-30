@@ -481,6 +481,16 @@ public actor AIRouter {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                // Der Offline-Modus ist eine Zusage an den Nutzer, keine
+                // Praeferenz. Genau hier war sie durchbrochen: laeuft das lokale
+                // Modell nicht (Ollama nicht gestartet — der wahrscheinlichste
+                // Fehlerfall ueberhaupt), ging der Prompt still in die Cloud.
+                // Wer den Flugmodus einschaltet, will lieber einen Fehler als
+                // eine Uebertragung.
+                guard !airplaneMode else {
+                    DebugLog.write("[AIRouter] Local fehlgeschlagen fuer \(task.rawValue) — Offline-Modus, KEIN Cloud-Fallback")
+                    throw error
+                }
                 DebugLog.write("[AIRouter] Local fehlgeschlagen fuer \(task.rawValue), Fallback zu Cloud: \(String(describing: error).prefix(80))")
                 result = try await runCloud(task: task, model: task.defaultModel, system: system, messages: messages, maxTokens: tokens, options: options, estimate: estimate)
             }

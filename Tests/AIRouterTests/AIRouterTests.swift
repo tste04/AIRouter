@@ -1233,3 +1233,73 @@ final class Counter: @unchecked Sendable {
     private var count = 0
     func next() -> Int { lock.lock(); defer { lock.unlock() }; count += 1; return count }
 }
+
+// MARK: - Offline-Garantie bei lokalem Fehler
+//
+// Der Flugmodus ist eine Zusage, keine Praeferenz. Unter `preferLocal` fiel der
+// Router bei einem lokalen Fehler auf die Cloud zurueck — und zwar auch mit
+// eingeschaltetem Flugmodus. Der wahrscheinlichste Fehlerfall ueberhaupt ist,
+// dass Ollama nicht laeuft; genau dann ging der Prompt still ins Netz.
+
+/// Lokaler Anbieter, der bereit meldet und dann scheitert — die Form, die den
+/// Fallback ausloest.
+private struct FailingLocalProvider: LocalInferenceProvider {
+    struct Boom: Error {}
+    var isReady: Bool { get async { true } }
+
+    func generate(system: String, user: String, maxTokens: Int) async throws
+        -> (text: String, inputTokens: Int, outputTokens: Int) {
+        throw Boom()
+    }
+
+    func generateStream(system: String, user: String, maxTokens: Int)
+        -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { $0.finish(throwing: Boom()) }
+    }
+}
+
+final class OfflineGuaranteeTests: XCTestCase {
+
+    private func makeRouter() async -> AIRouter {
+        let router = AIRouter(vertexRegion: "us-central1", vertexProject: "demo")
+        await router.configureLocalLLM(endpoint: "http://localhost:11434", model: "gemma3")
+        await router.configureLocalProvider(FailingLocalProvider())
+        return router
+    }
+
+    /// Im Flugmodus muss der Fehler beim Aufrufer ankommen — nicht eine
+    /// Antwort, die aus der Cloud stammt.
+    func testLocalFailureInAirplaneModeDoesNotReachTheCloud() async {
+        let router = await makeRouter()
+        await router.setEnergyMode(.offline)
+
+        do {
+            _ = try await router.send(task: .factCheck, system: "s",
+                                      messages: [.user("streng vertraulich")], maxTokens: 32)
+            XCTFail("Der Prompt haette die Maschine verlassen")
+        } catch is FailingLocalProvider.Boom {
+            // Erwartet: der lokale Fehler wird durchgereicht.
+        } catch {
+            // Kein Cloud-Fehler erwartet — ein Netzwerk-/Auth-Fehler waere der
+            // Beweis, dass doch gerufen wurde.
+            XCTFail("unerwarteter Fehler (Cloud-Pfad?): \(error)")
+        }
+    }
+
+    /// Ohne Flugmodus bleibt der Fallback wie er war — sonst waere die
+    /// Aenderung eine Verschlechterung fuer alle anderen.
+    func testLocalFailureOutsideAirplaneModeStillFallsBack() async {
+        let router = await makeRouter()
+        await router.setEnergyMode(.fullPower)
+
+        do {
+            _ = try await router.send(task: .factCheck, system: "s",
+                                      messages: [.user("hallo")], maxTokens: 32)
+            XCTFail("ohne echte Cloud-Zugangsdaten kann das nicht gelingen")
+        } catch is FailingLocalProvider.Boom {
+            XCTFail("ausserhalb des Flugmodus muss der Cloud-Fallback greifen")
+        } catch {
+            // Erwartet: der Versuch ging in die Cloud und scheiterte dort.
+        }
+    }
+}
