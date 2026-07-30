@@ -829,6 +829,38 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(storage.current?.tokensUsed, 20)
     }
 
+    // MARK: - Routing-Governance
+
+    func testOfflineOverridesTaskModelOverride() async {
+        // taskModels-Override darf die Offline-Garantie nicht durchbrechen.
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            taskModels: [.factCheck: "gemini-2.5-pro"]
+        )
+        await router.configureLocalLLM(endpoint: "http://localhost:11434", model: "gemma3")
+        await router.setEnergyMode(.offline)
+        let model = await router.resolvedModelName(for: .factCheck)
+        XCTAssertEqual(model, "local:gemma3", "Offline muss den Cloud-Override verdraengen")
+        await router.setEnergyMode(.fullPower)
+        await router.setAirplaneMode(true)
+        let airplaneModel = await router.resolvedModelName(for: .factCheck)
+        XCTAssertEqual(airplaneModel, "local:gemma3", "airplaneMode muss den Cloud-Override verdraengen")
+    }
+
+    func testMaxCloudRespectsLocalOnlyPolicy() async {
+        // localOnly ist eine Datenschutz-Zusage — auch unter maxCloud.
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            taskRoutingPolicies: [.factCheck: .localOnly]
+        )
+        await router.configureLocalLLM(endpoint: "http://localhost:11434", model: "gemma3")
+        await router.setEnergyMode(.maxCloud)
+        let model = await router.resolvedModelName(for: .factCheck)
+        XCTAssertEqual(model, "local:gemma3", "localOnly darf unter maxCloud nicht in die Cloud")
+    }
+
     // MARK: - Budget-Reservierung (Epoche & USD)
 
     func testBudgetEpochProtectsNewWindowReservations() async throws {

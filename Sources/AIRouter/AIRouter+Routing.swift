@@ -28,14 +28,18 @@ extension AIRouter {
     }
 
     func resolveModel(for task: AITask) -> String {
-        if let override = taskModels[task] { return override }
+        // Offline-Garantie schlaegt Modell-Overrides: bei airplaneMode/.offline
+        // darf KEIN Pfad ins Netz fuehren, auch nicht ueber taskModels.
         if airplaneMode { return localModelTag }
+        if let override = taskModels[task] { return override }
 
         let policy = taskRoutingPolicies[task] ?? task.routingPolicy
         let localAvailable = hasLocalBackend()
 
         switch energyMode {
         case .maxCloud:
+            // localOnly ist eine Datenschutz-Zusage und gilt auch unter maxCloud.
+            if policy == .localOnly { return localModelTag }
             return upgradeModel(task.defaultModel)
         case .offline:
             return localModelTag
