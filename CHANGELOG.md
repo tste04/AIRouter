@@ -6,6 +6,31 @@ Release getaggt ist. Bis dahin sammelt `Unreleased` den Stand von `main`.
 
 ## [Unreleased]
 
+### Behoben (Komplettreview, adversarial verifiziert)
+- Budget-Reservierungen tragen eine Fenster-Epoche: der Stunden-Reset kann
+  laufende Reservierungen nicht mehr korrumpieren (Überbuchung).
+- USD-Kosten-Budget reserviert in-flight-Kosten mit — parallele Aufrufe
+  können das Ceiling nicht mehr gemeinsam durchbrechen.
+- Offline-Garantie (`airplaneMode`/`.offline`) schlägt `taskModels`-Overrides;
+  `localOnly` gilt auch unter `maxCloud`.
+- Raw-Pfad `send(model:)` unterliegt vollem Token-/Kosten-Budget-Preflight.
+- `isPrivateOrLoopbackHost` prüft echte IPv4-Oktette (kein `10.evil.com`-Bypass);
+  Größenlimit gilt auch für den Streaming-Transport.
+- Transiente Transportfehler werden retried; 404-Fallback mit Zyklus-Schutz;
+  SSE-Abbrüche zählen für Breaker/Statistik; Google-Antworten werden über alle
+  `parts` zusammengesetzt; Persistenz-Snapshots serialisiert.
+
+### Hinzugefügt (Review-Erweiterungen)
+- `healthStatus()`, `availableModels()`, `flushPersistence()`,
+  `currentEnergyMode`/`isAirplaneMode`/`localModelName`-Getter.
+- `setBreakerParameters(...)`, `setBudgetWindow(seconds:)`,
+  `BudgetStatus.costBudgetUSD`/`costUtilization`.
+- Kontextfenster-Prüfung (`contextWindowExceeded`) vor dem Versand.
+- Raw-Streaming `sendStreaming(model:...)`; Budget-Warteschlange auch für
+  Streaming; `GenerationOptions` in allen Single-Turn-Overloads.
+- Codable/Equatable/CaseIterable-Konformitäten auf Konfigurationstypen.
+- CI: zusätzlicher iOS-Build-Job.
+
 ### Hinzugefügt
 - Task-basiertes Routing über Energiemodi (`maxCloud`/`fullPower`/`offline`/`powerSave`)
   und Routing-Policies (`cloudOnly`/`preferCloud`/`preferLocal`/`localOnly`).

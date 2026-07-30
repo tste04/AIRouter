@@ -57,6 +57,11 @@ kostenpflichtig (siehe [Lizenz](#lizenz) / [COMMERCIAL.md](COMMERCIAL.md)).
 | **Persistenz** | `RouterStorage`-Protokoll + `configureStorage(_:)` — Budget-Zustand überlebt App-Neustarts (kein Budget-Reset per Neustart). |
 | **Konkurrenzlimit** | `setMaxConcurrentCloudCalls(_:)` — Backpressure für parallele Cloud-Aufrufe (Default 8). |
 | **Modell-Statistik** | `modelStats()` — Aufrufe, Fehler und Ø-Latenz pro Modell seit Prozessstart. |
+| **Health-Status** | `healthStatus()` — offene Breaker, aktive/wartende Cloud-Calls, Cache-Größe, Provider, lokales Backend. |
+| **Lifecycle** | `flushPersistence()` wartet vor App-Terminierung auf den letzten Budget-Snapshot. |
+| **Kontextfenster-Schutz** | Anfragen über dem Katalog-Kontextfenster scheitern früh mit `contextWindowExceeded` statt spät am Backend. |
+| **Zustands-Getter** | `currentEnergyMode`, `isAirplaneMode`, `localModelName`, `availableModels()`, `BudgetStatus.costBudgetUSD`. |
+| **Betriebs-Parameter** | `setBreakerParameters(failureThreshold:cooldownSeconds:)`, `setBudgetWindow(seconds:)`. |
 | **Telemetrie** | `setUsageCallback(_:)` liefert `AIUsageInfo` (Modell, Tokens, Dauer, `isEstimated`, `costUSD`) pro Aufruf — auch beim Streaming. |
 | **Injizierbare Auth** | `accessTokenProvider`-Closure liefert ein `AccessToken` (Wert + `expiresAt`); keine Auth-Strategie und keine feste TTL sind verdrahtet. |
 | **Injizierbarer Transport** | `transport: HTTPTransport` ist austauschbar (Default `URLSession`), wodurch der Router ohne echtes Netz testbar ist. |
