@@ -117,11 +117,13 @@ extension AIRouter {
             guard let candidates = json["candidates"] as? [[String: Any]],
                   let first = candidates.first,
                   let content = first["content"] as? [String: Any],
-                  let parts = content["parts"] as? [[String: Any]],
-                  let firstPart = parts.first,
-                  let text = firstPart["text"] as? String else {
+                  let parts = content["parts"] as? [[String: Any]] else {
                 throw AIRouterError.unexpectedResponse
             }
+            // Mehrteilige Antworten vollstaendig zusammensetzen statt nur parts[0].
+            let texts = parts.compactMap { $0["text"] as? String }
+            guard !texts.isEmpty else { throw AIRouterError.unexpectedResponse }
+            let text = texts.joined()
             let meta = json["usageMetadata"] as? [String: Any]
             return CallResult(
                 text: text,

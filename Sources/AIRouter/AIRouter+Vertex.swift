@@ -250,35 +250,46 @@ extension AIRouter {
         var outputTokens = 0
         var charCount = 0
 
-        for try await line in lines {
-            try Task.checkCancellation()
-            guard let json = SSE.jsonPayload(from: line) else { continue }
-            switch desc.provider {
-            case .anthropic:
-                let event = AnthropicStreamEvent(json: json)
-                if let text = event.text {
-                    charCount += text.count
-                    continuation.yield(text)
+        do {
+            for try await line in lines {
+                try Task.checkCancellation()
+                guard let json = SSE.jsonPayload(from: line) else { continue }
+                switch desc.provider {
+                case .anthropic:
+                    let event = AnthropicStreamEvent(json: json)
+                    if let text = event.text {
+                        charCount += text.count
+                        continuation.yield(text)
+                    }
+                    if let input = event.inputTokens { inputTokens = input }
+                    if let output = event.outputTokens { outputTokens = output }
+                case .google:
+                    if let candidates = json["candidates"] as? [[String: Any]],
+                       let first = candidates.first,
+                       let content = first["content"] as? [String: Any],
+                       let parts = content["parts"] as? [[String: Any]] {
+                        // Alle Parts eines Chunks yielden, nicht nur den ersten.
+                        let text = parts.compactMap { $0["text"] as? String }.joined()
+                        if !text.isEmpty {
+                            charCount += text.count
+                            continuation.yield(text)
+                        }
+                    }
+                    if let meta = json["usageMetadata"] as? [String: Any] {
+                        inputTokens = meta["promptTokenCount"] as? Int ?? inputTokens
+                        outputTokens = meta["candidatesTokenCount"] as? Int ?? outputTokens
+                    }
+                case .local, .custom:
+                    // .custom wird oben an streamCustom dispatcht; hier unerreichbar.
+                    break
                 }
-                if let input = event.inputTokens { inputTokens = input }
-                if let output = event.outputTokens { outputTokens = output }
-            case .google:
-                if let candidates = json["candidates"] as? [[String: Any]],
-                   let first = candidates.first,
-                   let content = first["content"] as? [String: Any],
-                   let parts = content["parts"] as? [[String: Any]],
-                   let text = parts.first?["text"] as? String, !text.isEmpty {
-                    charCount += text.count
-                    continuation.yield(text)
-                }
-                if let meta = json["usageMetadata"] as? [String: Any] {
-                    inputTokens = meta["promptTokenCount"] as? Int ?? inputTokens
-                    outputTokens = meta["candidatesTokenCount"] as? Int ?? outputTokens
-                }
-            case .local, .custom:
-                // .custom wird oben an streamCustom dispatcht; hier unerreichbar.
-                break
             }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // Abbrueche MITTEN im Stream zaehlen fuer Breaker und Statistik.
+            recordFailure(model)
+            throw error
         }
 
         recordSuccess(model)

@@ -82,6 +82,11 @@ extension AIRouter {
     }
 
     func releaseCloudSlot() {
+        if activeCloudCalls > maxConcurrentCloudCalls {
+            // Limit wurde gesenkt: Kapazitaet abbauen statt Slot weiterzugeben.
+            activeCloudCalls -= 1
+            return
+        }
         if !slotWaiters.isEmpty {
             // Slot direkt an den naechsten Wartenden uebergeben (Zaehler bleibt).
             slotWaiters.removeFirst().continuation.resume(returning: ())

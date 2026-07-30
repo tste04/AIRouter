@@ -5,7 +5,9 @@ extension AIRouter {
 
     func effectiveMaxTokens(task: AITask, requested: Int?) -> Int {
         let base = requested ?? task.defaultMaxTokens
-        return energyMode == .maxCloud ? Int((Double(base) * 1.5 / 100).rounded() * 100) : base
+        guard energyMode == .maxCloud else { return base }
+        // Nie unter das Basis-Limit runden (kleine Limits wuerden sonst auf 0 fallen).
+        return max(base, Int((Double(base) * 1.5 / 100).rounded() * 100))
     }
 
     /// Budget-Schaetzung fuer eine Anfrage: Input (System + Verlauf, ~4 Zeichen
