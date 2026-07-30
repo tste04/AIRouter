@@ -113,6 +113,7 @@ extension AIRouter {
         var currentModel = model
         var transientAttempts = 0
         var tokenRefreshed = false
+        var fallbacksVisited: Set<String> = []
         let clock = ContinuousClock()
 
         while true {
@@ -138,6 +139,12 @@ extension AIRouter {
                 (data, http) = try await transport.data(for: request)
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let error as URLError where Self.isTransientURLError(error) && transientAttempts < retryPolicy.maxTransientRetries {
+                // Timeouts/Verbindungsabbrueche sind genauso transient wie 5xx.
+                transientAttempts += 1
+                DebugLog.write("[AIRouter] Transportfehler fuer \(currentModel) (Retry \(transientAttempts)): URLError \(error.code.rawValue)")
+                try await Task.sleep(for: .seconds(Self.backoffDelay(policy: retryPolicy, attempt: transientAttempts)))
+                continue
             } catch {
                 recordFailure(currentModel)
                 throw error
@@ -159,7 +166,9 @@ extension AIRouter {
 
             case 404:
                 // Modell-Fallback verbraucht KEINEN transienten Retry.
-                if let fallback = descriptor.fallsBackTo, fallback != currentModel {
+                // Zyklus-Schutz: jede Kette wird pro Modell nur einmal betreten.
+                fallbacksVisited.insert(currentModel)
+                if let fallback = descriptor.fallsBackTo, !fallbacksVisited.contains(fallback) {
                     DebugLog.write("[AIRouter] Modell \(currentModel) nicht gefunden, Fallback zu \(fallback)")
                     currentModel = fallback
                     continue
@@ -182,6 +191,17 @@ extension AIRouter {
                 }
                 throw AIRouterError.api(http.statusCode, data: data)
             }
+        }
+    }
+
+    /// Netzwerkfehler, die einen Retry rechtfertigen (analog zu HTTP 429/5xx).
+    static func isTransientURLError(_ error: URLError) -> Bool {
+        switch error.code {
+        case .timedOut, .networkConnectionLost, .cannotConnectToHost,
+             .cannotFindHost, .dnsLookupFailed, .notConnectedToInternet:
+            return true
+        default:
+            return false
         }
     }
 
