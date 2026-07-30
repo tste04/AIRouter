@@ -505,6 +505,7 @@ public actor AIRouter {
         // Voller Budget-Preflight wie beim Task-Pfad (Prioritaet .normal) —
         // der rohe Pfad ist kein Schlupfloch an den Kostengrenzen vorbei.
         let estimate = estimatedRequestTokens(system: system, messages: messages, maxTokens: maxTokens)
+        try checkContextWindow(model: effectiveModel, estimate: estimate)
         let reservation = try reserveBudget(
             priority: .normal,
             label: "raw:\(effectiveModel)",

@@ -9,7 +9,15 @@ extension AIRouter {
         estimatedCost(model: model, input: max(0, estimate - maxTokens), output: maxTokens) ?? 0
     }
 
+    /// Wirft, wenn die Schaetzung das Kontextfenster des Modells uebersteigt —
+    /// frueh und klar scheitern statt spaet am Backend (oder still gekuerzt).
+    func checkContextWindow(model: String, estimate: Int) throws {
+        guard let window = catalog.descriptor(for: model)?.contextWindow, estimate > window else { return }
+        throw AIRouterError.contextWindowExceeded(model: model, estimatedTokens: estimate, window: window)
+    }
+
     func runCloud(task: AITask, model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, estimate: Int) async throws -> String {
+        try checkContextWindow(model: model, estimate: estimate)
         let reservation = try reserveBudget(
             task: task,
             estimatedTokens: estimate,
@@ -34,6 +42,7 @@ extension AIRouter {
 
     func streamCloud(task: AITask, model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, continuation: AsyncThrowingStream<String, Error>.Continuation) async throws {
         let estimate = estimatedRequestTokens(system: system, messages: messages, maxTokens: maxTokens)
+        try checkContextWindow(model: model, estimate: estimate)
         let reservation = try reserveBudget(
             task: task,
             estimatedTokens: estimate,

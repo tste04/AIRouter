@@ -839,6 +839,26 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(storage.current?.tokensUsed, 20)
     }
 
+    func testContextWindowExceededFailsFast() async {
+        let transport = MockTransport(responses: [])
+        let router = makeRouter(
+            transport: transport,
+            taskModels: [.factCheck: "tiny-model"],
+            additionalModels: ["tiny-model": ModelDescriptor(provider: .google, contextWindow: 1_000)]
+        )
+        do {
+            _ = try await router.send(task: .factCheck, system: String(repeating: "x", count: 8_000), user: "u", maxTokens: 100)
+            XCTFail("Expected contextWindowExceeded")
+        } catch let error as AIRouterError {
+            guard case .contextWindowExceeded = error else {
+                return XCTFail("Expected contextWindowExceeded, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        XCTAssertEqual(transport.requestCount, 0)
+    }
+
     func testRawModelSendEnforcesBudget() async {
         // Der rohe Modell-Pfad darf die Budgetgrenzen nicht umgehen.
         let transport = MockTransport(responses: [])

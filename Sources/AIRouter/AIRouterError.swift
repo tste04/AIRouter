@@ -11,6 +11,7 @@ public enum AIRouterError: LocalizedError {
     case budgetExhausted(task: String)
     case circuitOpen(model: String)
     case responseTooLarge(limitBytes: Int)
+    case contextWindowExceeded(model: String, estimatedTokens: Int, window: Int)
 
     public var errorDescription: String? {
         switch self {
@@ -23,6 +24,7 @@ public enum AIRouterError: LocalizedError {
         case .budgetExhausted(let task): return "AI-Budget erschoepft fuer Task '\(task)'. Wird im naechsten Stundenzyklus ausgefuehrt."
         case .circuitOpen(let model): return "Modell '\(model)' ist nach wiederholten Fehlern temporaer deaktiviert (Circuit-Breaker)."
         case .responseTooLarge(let limit): return "Antwort ueberschreitet das Groessenlimit von \(limit) Bytes."
+        case .contextWindowExceeded(let model, let estimated, let window): return "Anfrage (~\(estimated) Tokens) uebersteigt das Kontextfenster von '\(model)' (\(window))."
         }
     }
 }
