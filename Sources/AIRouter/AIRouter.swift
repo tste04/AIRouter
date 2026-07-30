@@ -167,7 +167,7 @@ public actor AIRouter {
     }
 
     var breakers: [String: BreakerState] = [:]
-    let breakerThreshold = 3
+    var breakerThreshold = 3
     /// Cooldown des Circuit-Breakers (nur fuer Tests veraenderbar).
     var breakerCooldown: Duration = .seconds(60)
 
@@ -376,6 +376,18 @@ public actor AIRouter {
         queueOnBudgetExhausted = enabled
     }
 
+    /// Konfiguriert den Circuit-Breaker (Default: 3 Fehler in Folge, 60 s
+    /// Cooldown; Minima 1 Fehler / 1 s).
+    public func setBreakerParameters(failureThreshold: Int, cooldownSeconds: TimeInterval) {
+        breakerThreshold = max(1, failureThreshold)
+        breakerCooldown = .seconds(max(1, cooldownSeconds))
+    }
+
+    /// Laenge des Budget-Fensters in Sekunden (Default 3600, min. 60).
+    public func setBudgetWindow(seconds: TimeInterval) {
+        budgetWindow = .seconds(max(60, seconds))
+    }
+
     /// Begrenzung paralleler Cloud-Aufrufe (Backpressure). Default: 8.
     public func setMaxConcurrentCloudCalls(_ limit: Int) {
         maxConcurrentCloudCalls = max(1, limit)
@@ -430,8 +442,8 @@ public actor AIRouter {
 
     // MARK: - Public API
 
-    public func send(task: AITask, system: String, user: String, maxTokens: Int? = nil) async throws -> String {
-        try await send(task: task, system: system, messages: [.user(user)], maxTokens: maxTokens)
+    public func send(task: AITask, system: String, user: String, maxTokens: Int? = nil, options: GenerationOptions = .default) async throws -> String {
+        try await send(task: task, system: system, messages: [.user(user)], maxTokens: maxTokens, options: options)
     }
 
     /// Multi-Turn-Variante: `messages` ist der Konversationsverlauf (User/Assistant),
@@ -500,8 +512,8 @@ public actor AIRouter {
         return result
     }
 
-    public func send(model: String, system: String, user: String, maxTokens: Int) async throws -> String {
-        try await send(model: model, system: system, messages: [.user(user)], maxTokens: maxTokens)
+    public func send(model: String, system: String, user: String, maxTokens: Int, options: GenerationOptions = .default) async throws -> String {
+        try await send(model: model, system: system, messages: [.user(user)], maxTokens: maxTokens, options: options)
     }
 
     /// Roher Modell-Pfad (ohne Task-Abstraktion). Zaehlt ebenfalls auf das
@@ -548,8 +560,8 @@ public actor AIRouter {
         resolveModel(for: task)
     }
 
-    public func sendStreaming(task: AITask, system: String, user: String, maxTokens: Int? = nil) -> AsyncThrowingStream<String, Error> {
-        sendStreaming(task: task, system: system, messages: [.user(user)], maxTokens: maxTokens)
+    public func sendStreaming(task: AITask, system: String, user: String, maxTokens: Int? = nil, options: GenerationOptions = .default) -> AsyncThrowingStream<String, Error> {
+        sendStreaming(task: task, system: system, messages: [.user(user)], maxTokens: maxTokens, options: options)
     }
 
     /// Token-weises Streaming: In-Process-Provider und Ollama streamen nativ,
@@ -583,7 +595,11 @@ public actor AIRouter {
                     try await self.streamCloud(task: task, model: model, system: system, messages: messages, maxTokens: tokens, options: options, continuation: continuation)
                     continuation.finish()
                 } catch let error as AIRouterError {
-                    if case .budgetExhausted = error, self.hasLocalBackend() {
+                    guard case .budgetExhausted = error else {
+                        continuation.finish(throwing: error)
+                        return
+                    }
+                    if self.hasLocalBackend() {
                         DebugLog.write("[AIRouter] Budget erschoepft fuer \(task.rawValue), Streaming-Fallback zu lokal")
                         do {
                             try await self.streamLocal(model: self.localModelTag, system: system, messages: messages, maxTokens: tokens, options: options, task: task, continuation: continuation)
@@ -591,8 +607,66 @@ public actor AIRouter {
                         } catch {
                             continuation.finish(throwing: error)
                         }
+                    } else if self.queueOnBudgetExhausted {
+                        // Warteschlange gilt auch fuer Streaming, nicht nur fuer send().
+                        do {
+                            let wait = self.secondsUntilBudgetReset()
+                            DebugLog.write("[AIRouter] Budget erschoepft fuer \(task.rawValue), Streaming wartet \(Int(wait))s")
+                            try await Task.sleep(for: .seconds(wait))
+                            try await self.streamCloud(task: task, model: model, system: system, messages: messages, maxTokens: tokens, options: options, continuation: continuation)
+                            continuation.finish()
+                        } catch {
+                            continuation.finish(throwing: error)
+                        }
                     } else {
                         continuation.finish(throwing: error)
+                    }
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in worker.cancel() }
+        }
+    }
+
+    /// Streaming-Pendant zum rohen Modell-Pfad ``send(model:system:messages:maxTokens:options:)``.
+    /// Unterliegt wie dieser dem vollen Budget-Preflight (Prioritaet `.normal`).
+    public func sendStreaming(model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions = .default) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let worker = Task {
+                let effectiveModel = self.airplaneMode ? self.localModelTag : model
+                if self.isLocalTag(effectiveModel) {
+                    do {
+                        try await self.streamLocal(model: effectiveModel, system: system, messages: messages, maxTokens: maxTokens, options: options, task: nil, continuation: continuation)
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                    return
+                }
+                do {
+                    let estimate = self.estimatedRequestTokens(system: system, messages: messages, maxTokens: maxTokens)
+                    try self.checkContextWindow(model: effectiveModel, estimate: estimate)
+                    let reservation = try self.reserveBudget(
+                        priority: .normal,
+                        label: "raw:\(effectiveModel)",
+                        estimatedTokens: estimate,
+                        estimatedCostUSD: self.estimatedRequestCostUSD(model: effectiveModel, estimate: estimate, maxTokens: maxTokens))
+                    do {
+                        try await self.acquireCloudSlot()
+                    } catch {
+                        self.releaseReservation(reservation)
+                        throw error
+                    }
+                    do {
+                        let usage = try await self.streamVertex(model: effectiveModel, system: system, messages: messages, maxTokens: maxTokens, options: options, task: nil, continuation: continuation)
+                        self.releaseCloudSlot()
+                        self.settleBudget(reservation, actualTokens: usage.input + usage.output)
+                        continuation.finish()
+                    } catch {
+                        self.releaseCloudSlot()
+                        self.releaseReservation(reservation)
+                        throw error
                     }
                 } catch {
                     continuation.finish(throwing: error)
