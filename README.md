@@ -34,39 +34,73 @@ kostenpflichtig (siehe [Lizenz](#lizenz) / [COMMERCIAL.md](COMMERCIAL.md)).
 
 ## Funktionen
 
-| Bereich | Funktion |
+### Routing & Aufgaben
+
+| Funktion | Details |
 | --- | --- |
-| **Aufgaben-Routing** | `send(task:system:user:)` wählt Modell anhand `AITask` (vordefinierte Aufgaben mit Default-Modell, Token-Budget, Priorität, Policy). |
-| **Energiemodi** | `setEnergyMode(_:)` — `maxCloud`, `fullPower`, `offline`, `powerSave` steuern Cloud-vs-Lokal-Verhalten global. |
-| **Routing-Policies** | Pro Aufgabe `cloudOnly` / `preferCloud` / `preferLocal` / `localOnly`, überschreibbar via `taskRoutingPolicies`. |
-| **Cloud ↔ Lokal-Fallback** | Automatischer Wechsel bei Fehlern oder erschöpftem Budget. |
-| **Vertex AI** | Anthropic (`:rawPredict`) und Google (`:generateContent`); Modell-Fallback bei HTTP 404, Token-Refresh bei HTTP 401, Retry mit Backoff. |
-| **Eigene Cloud-Provider** | `CloudInferenceProvider`-Protokoll + `registerCloudProvider(_:)`; mitgeliefert: `OpenAICompatibleProvider` (OpenAI, Azure, Groq, vLLM, …) und `AnthropicDirectProvider`. Budget, Breaker, Retry, Preflight und Kosten bleiben beim Router. |
-| **Lokale Inferenz** | `LocalInferenceProvider`-Protokoll (eigenes On-Device-Modell) **oder** Ollama (`/api/chat`), mit Auto-Erkennung installierter Ollama-Modelle. |
-| **Streaming** | `sendStreaming(task:…)` liefert Token-weise: In-Process, Ollama-NDJSON und Cloud nativ via SSE (`:streamRawPredict` / `:streamGenerateContent?alt=sse`), inkl. Budget-Reservierung. |
-| **Multi-Turn & Optionen** | `send(task:system:messages:options:)` mit `AIMessage`-Verlauf und `GenerationOptions` (Temperatur, top-p/k, Stop-Sequenzen, `jsonMode`, `requestTimeout`) auf allen Pfaden. |
-| **JSON-Mode** | `GenerationOptions(jsonMode: true)` — strukturierte Ausgabe via Google `responseMimeType`, OpenAI `response_format`, Ollama `format: json`. |
-| **Circuit-Breaker** | Nach 3 Fehlern in Folge wird ein Modell 60 s gemieden (Fallback-Kette, sonst `circuitOpen`). |
-| **Antwort-Cache** | `enableResponseCache(tasks:ttlSeconds:maxEntries:)` — opt-in für idempotente Tasks, Schlüssel = vollständige Anfrage. |
-| **Kosten-Telemetrie** | Katalog-Preise (USD/MTok) ergeben `AIUsageInfo.costUSD` pro Aufruf und `BudgetStatus.costUSD` pro Stunde. |
-| **PII-Preflight** | `setCloudPreflight(_:)` transformiert System-Prompt und Nachrichten vor jedem Cloud-Versand (z. B. Redaktion); lokale Aufrufe bleiben unberührt. |
-| **Retry-Policy** | `RetryPolicy(maxTransientRetries:baseDelay:)` im Initializer steuert Backoff für HTTP 429/5xx. |
-| **Token-Budget** | `setHourlyBudget(_:)` + `budgetStatus()`; Reservierungs-Budget (kein TOCTOU): Schaetzung wird vor dem Netzaufruf reserviert und nach Antwort mit echten Tokenzahlen verrechnet. Throttling nach Priorität (critical umgeht Budget). |
-| **Kosten-Budget (USD)** | `setHourlyCostBudget(usd:)` — zusätzliche Stunden-Grenze in USD auf Basis der Katalog-Preise. |
-| **Budget-Warteschlange** | `setQueueOnBudgetExhausted(true)` — Cloud-Aufrufe warten aufs nächste Stundenfenster statt zu werfen (wenn kein lokales Fallback existiert). |
-| **Persistenz** | `RouterStorage`-Protokoll + `configureStorage(_:)` — Budget-Zustand überlebt App-Neustarts (kein Budget-Reset per Neustart). |
-| **Konkurrenzlimit** | `setMaxConcurrentCloudCalls(_:)` — Backpressure für parallele Cloud-Aufrufe (Default 8). |
-| **Modell-Statistik** | `modelStats()` — Aufrufe, Fehler und Ø-Latenz pro Modell seit Prozessstart. |
-| **Health-Status** | `healthStatus()` — offene Breaker, aktive/wartende Cloud-Calls, Cache-Größe, Provider, lokales Backend. |
-| **Lifecycle** | `flushPersistence()` wartet vor App-Terminierung auf den letzten Budget-Snapshot. |
-| **Kontextfenster-Schutz** | Anfragen über dem Katalog-Kontextfenster scheitern früh mit `contextWindowExceeded` statt spät am Backend. |
-| **Zustands-Getter** | `currentEnergyMode`, `isAirplaneMode`, `localModelName`, `availableModels()`, `BudgetStatus.costBudgetUSD`. |
-| **Betriebs-Parameter** | `setBreakerParameters(failureThreshold:cooldownSeconds:)`, `setBudgetWindow(seconds:)`. |
-| **Telemetrie** | `setUsageCallback(_:)` liefert `AIUsageInfo` (Modell, Tokens, Dauer, `isEstimated`, `costUSD`) pro Aufruf — auch beim Streaming. |
-| **Injizierbare Auth** | `accessTokenProvider`-Closure liefert ein `AccessToken` (Wert + `expiresAt`); keine Auth-Strategie und keine feste TTL sind verdrahtet. |
-| **Injizierbarer Transport** | `transport: HTTPTransport` ist austauschbar (Default `URLSession`), wodurch der Router ohne echtes Netz testbar ist. |
-| **Modellkatalog** | Bekannte Modelle inkl. Upgrade-/Fallback-Kanten stehen im `ModelCatalog`; eigene Modelle via `additionalModels`. Unbekannte Modelle führen zu `AIRouterError.notConfigured` statt stiller Fehl-Zuordnung. |
-| **Logging** | `DebugLog` über `os.Logger`, optional in Datei (`DebugLog.configure(filePath:)`). |
+| Aufgaben-Routing | `send(task:…)` wählt das Modell anhand `AITask` (Default-Modell, Token-Limit, Priorität, Policy). |
+| Energiemodi | `setEnergyMode(_:)` — `maxCloud`, `fullPower`, `offline`, `powerSave` steuern Cloud-vs-Lokal global. |
+| Routing-Policies | Pro Aufgabe `cloudOnly` / `preferCloud` / `preferLocal` / `localOnly`, überschreibbar via `taskRoutingPolicies`. |
+| Governance-Garantien | `offline`/`airplaneMode` schlägt Modell-Overrides; `localOnly` gilt auch unter `maxCloud`. |
+| Cloud ↔ Lokal-Fallback | Automatischer Wechsel bei Fehlern oder erschöpftem Budget — auch beim Streaming. |
+| Kontextfenster-Schutz | Anfragen über dem Katalog-Kontextfenster scheitern früh mit `contextWindowExceeded`. |
+
+### Backends
+
+| Funktion | Details |
+| --- | --- |
+| Vertex AI | Anthropic (`:rawPredict`) und Google (`:generateContent`); Modell-Fallback bei 404 (zyklusfest), Token-Refresh bei 401. |
+| Eigene Cloud-Provider | `CloudInferenceProvider`-Protokoll + `registerCloudProvider(_:)`; mitgeliefert: `OpenAICompatibleProvider` (OpenAI, Azure, Groq, vLLM, …) und `AnthropicDirectProvider`. Budget, Breaker, Retry, Preflight und Kosten bleiben beim Router. |
+| Lokale Inferenz | `LocalInferenceProvider`-Protokoll (On-Device) **oder** Ollama (`/api/chat`) mit Modell-Auto-Discovery. |
+| Modellkatalog | `ModelCatalog` mit Upgrade-/Fallback-Kanten, Preisen und Kontextfenstern; eigene Modelle via `additionalModels`; unbekannte Modelle scheitern laut (`notConfigured`). `availableModels()` enumeriert. |
+
+### Anfragen
+
+| Funktion | Details |
+| --- | --- |
+| Multi-Turn & Optionen | `AIMessage`-Verläufe und `GenerationOptions` (Temperatur, top-p/k, Stop-Sequenzen, `jsonMode`, `requestTimeout`) auf allen Pfaden — auch in den Single-Turn-Overloads. |
+| Streaming | Token-weise via In-Process, Ollama-NDJSON und Cloud-SSE (`:streamRawPredict` / `:streamGenerateContent?alt=sse`), inkl. Budget-Reservierung. |
+| Roher Modell-Pfad | `send(model:…)` und `sendStreaming(model:…)` ohne Task-Abstraktion — mit vollem Budget-Preflight (kein Schlupfloch). |
+| JSON-Mode | Strukturierte Ausgabe via Google `responseMimeType`, OpenAI `response_format`, Ollama `format: json`. |
+
+### Budget & Kosten
+
+| Funktion | Details |
+| --- | --- |
+| Token-Budget | Reservierungs-Budget pro Stundenfenster mit Fenster-Epoche (reset-fest, kein TOCTOU); Throttling nach Priorität, `critical` passiert immer. |
+| Kosten-Budget (USD) | `setHourlyCostBudget(usd:)` — Ceiling inkl. in-flight-reservierter Kosten; parallele Aufrufe können es nicht gemeinsam durchbrechen. |
+| Budget-Warteschlange | `setQueueOnBudgetExhausted(true)` — send **und** Streaming warten aufs nächste Fenster statt zu werfen. |
+| Persistenz | `RouterStorage` + `configureStorage(_:)`; Snapshots serialisiert, `flushPersistence()` vor App-Terminierung. |
+| Fenster-Konfiguration | `setHourlyBudget(_:)` (min. 10k), `setBudgetWindow(seconds:)` (min. 60 s). |
+
+### Resilienz & Betrieb
+
+| Funktion | Details |
+| --- | --- |
+| Circuit-Breaker | Modelle mit Fehlerserien werden temporär gemieden (Fallback-Kette, sonst `circuitOpen`); konfigurierbar via `setBreakerParameters(…)`. |
+| Retries | HTTP 429/5xx **und** transiente Transportfehler (Timeout, Verbindungsabbruch) mit exponentiellem Backoff + Jitter (`RetryPolicy`). |
+| Konkurrenzlimit | `setMaxConcurrentCloudCalls(_:)` — Backpressure (Default 8), Cancellation-korrekt, Limit-Senkung wird respektiert. |
+| Antwort-Cache | `enableResponseCache(…)` — opt-in, Schlüssel = vollständige Anfrage; degradierte Budget-Fallback-Antworten werden nicht gecacht. |
+
+### Beobachtbarkeit
+
+| Funktion | Details |
+| --- | --- |
+| Telemetrie | `setUsageCallback(_:)` liefert `AIUsageInfo` (Modell, Tokens, Dauer, `isEstimated`, `costUSD`) pro Aufruf — auch beim Streaming. |
+| Budget-Status | `budgetStatus()` — Verbrauch, Reservierungen, USD-Kosten, Grenzen, `secondsUntilReset` (monotone Uhr). |
+| Health-Status | `healthStatus()` — offene Breaker, aktive/wartende Cloud-Calls, Cache-Größe, Provider, lokales Backend. |
+| Modell-Statistik | `modelStats()` — Aufrufe, Fehler, Ø-Latenz pro Modell. |
+| Zustands-Getter | `currentEnergyMode`, `isAirplaneMode`, `localModelName`, `isLocalModelReady()`. |
+| Logging | `DebugLog` über `os.Logger` (`privacy: .private`), optional Datei-Log (`0600`). |
+
+### Integration
+
+| Funktion | Details |
+| --- | --- |
+| Injizierbare Auth | `accessTokenProvider` liefert `AccessToken` (Wert + `expiresAt`); keine Auth-Strategie verdrahtet. |
+| Injizierbarer Transport | `HTTPTransport` austauschbar (Default `URLSession` mit 50-MB-Limit) — testbar ohne Netz. |
+| Serialisierbar | `AIMessage`, `GenerationOptions`, `RetryPolicy`, `ModelDescriptor`, `EnergyMode`, `RoutingPolicy` sind `Codable`. |
+| PII-Preflight | `setCloudPreflight(_:)` transformiert ausgehende Cloud-Inhalte (z. B. Redaktion); lokale Aufrufe unberührt. |
 
 ## Installation
 
@@ -376,7 +410,8 @@ Details und Meldeweg für Schwachstellen: [SECURITY.md](SECURITY.md).
 
 | Datei | Inhalt |
 | --- | --- |
-| `AIRouter.swift` | Zentraler Actor: Routing, Budget, Breaker, Cache, Streaming, Telemetrie. |
+| `AIRouter.swift` | Kern-Actor: State, Init, Konfiguration, Public API. |
+| `AIRouter+*.swift` | Thematische Extensions: `+Cloud` (Orchestrierung/Slots), `+Routing`, `+Vertex`, `+CustomProviders`, `+Local`, `+Budget`, `+Resilience` (Breaker/Cache), `+Telemetry` (Auth/Usage). |
 | `AITask.swift` | Aufgaben-Enum mit Default-Modell, Token-Limit und Priorität. |
 | `RoutingPolicy.swift` / `EnergyMode.swift` | Policies und Energiemodi. |
 | `AIMessage.swift` | `AIMessage` (Multi-Turn) und `GenerationOptions`. |
@@ -387,7 +422,8 @@ Details und Meldeweg für Schwachstellen: [SECURITY.md](SECURITY.md).
 | `HTTPTransport.swift` | Injizierbarer Transport (`data` + zeilenweises `lines`-Streaming). |
 | `AccessToken.swift` / `RetryPolicy.swift` | Auth-Token mit Ablauf; Retry-Strategie. |
 | `RouterStorage.swift` | Persistenz-Protokoll für den Budget-Zustand. |
-| `RouterValidation.swift` | Allowlist-Validierung für Regionen, Projekte, Modellnamen, Endpoints. |
+| `RouterValidation.swift` | Allowlist-Validierung für Regionen, Projekte, Modellnamen, Endpoints (inkl. echter IPv4-Prüfung). |
+| `SSEParsing.swift` | Gemeinsamer SSE-/Anthropic-Event-Parser für Vertex- und Direkt-Streaming. |
 | `DebugLog.swift` | `os.Logger` + optionales Datei-Log (`0600`). |
 
 ### Projekt-Dokumente
@@ -411,7 +447,7 @@ Details und Meldeweg für Schwachstellen: [SECURITY.md](SECURITY.md).
 
 ```sh
 swift build
-swift test   # 47 Tests, laufen komplett gegen Mocks — kein Netz, keine Credentials
+swift test   # 61 Tests, laufen komplett gegen Mocks — kein Netz, keine Credentials
 ```
 
 CI (GitHub Actions, macOS) baut und testet jeden Push auf `main` und jeden
