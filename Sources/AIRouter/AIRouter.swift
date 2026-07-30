@@ -614,6 +614,12 @@ public actor AIRouter {
         /// (konsistent mit dem tatsaechlichen Reset, unbeeindruckt von
         /// Wanduhr-Spruengen).
         public let secondsUntilReset: Int
+        /// Konfiguriertes USD-Stunden-Ceiling (`nil` = keine Kosten-Grenze).
+        public let costBudgetUSD: Double?
+        /// Auslastung der Kosten-Grenze (0…1+); `nil` ohne Kosten-Grenze.
+        public var costUtilization: Double? {
+            costBudgetUSD.map { $0 > 0 ? costUSD / $0 : 0 }
+        }
         public var remaining: Int { max(0, tokenBudget - tokensUsed - tokensReserved) }
         public var utilization: Double { tokenBudget > 0 ? Double(tokensUsed + tokensReserved) / Double(tokenBudget) : 0 }
         public var minutesUntilReset: Int { secondsUntilReset / 60 }
@@ -628,7 +634,41 @@ public actor AIRouter {
             throttledCount: throttledTasks,
             hourStarted: currentHourStart,
             costUSD: costThisHourUSD,
-            secondsUntilReset: Int(rawSecondsUntilReset())
+            secondsUntilReset: Int(rawSecondsUntilReset()),
+            costBudgetUSD: hourlyCostBudgetUSD
         )
+    }
+
+    /// Betriebszustand fuer Monitoring und Debug-Panels.
+    public struct HealthStatus: Sendable {
+        /// Modelle mit aktuell offenem Circuit-Breaker.
+        public let openBreakers: [String]
+        public let activeCloudCalls: Int
+        public let queuedCloudCalls: Int
+        public let maxConcurrentCloudCalls: Int
+        public let responseCacheEntries: Int
+        public let registeredProviders: [String]
+        public let localBackendConfigured: Bool
+    }
+
+    public func healthStatus() -> HealthStatus {
+        HealthStatus(
+            openBreakers: breakers.compactMap { model, state -> String? in
+                guard let openedAt = state.openedAt,
+                      budgetClock.now - openedAt < breakerCooldown else { return nil }
+                return model
+            }.sorted(),
+            activeCloudCalls: activeCloudCalls,
+            queuedCloudCalls: slotWaiters.count,
+            maxConcurrentCloudCalls: maxConcurrentCloudCalls,
+            responseCacheEntries: responseCache.count,
+            registeredProviders: customProviders.keys.sorted(),
+            localBackendConfigured: hasLocalBackend()
+        )
+    }
+
+    /// Alle im Katalog bekannten Modellnamen (Defaults + `additionalModels`).
+    public func availableModels() -> [String] {
+        catalog.modelNames
     }
 }

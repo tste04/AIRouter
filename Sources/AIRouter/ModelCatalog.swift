@@ -59,6 +59,11 @@ public struct ModelCatalog: Sendable {
         entries[model]
     }
 
+    /// Alle registrierten Modellnamen, sortiert.
+    public var modelNames: [String] {
+        entries.keys.sorted()
+    }
+
     /// Fuegt eigene Modelle hinzu bzw. ueberschreibt Defaults.
     public mutating func merge(_ additional: [String: ModelDescriptor]) {
         entries.merge(additional) { _, new in new }
