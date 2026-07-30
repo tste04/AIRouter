@@ -29,6 +29,8 @@ public enum AIRouterError: LocalizedError {
     }
 }
 
+extension AIRouterError: Equatable {}
+
 extension AIRouterError {
     /// Baut einen API-Fehler mit auf 500 Zeichen gekapptem Response-Body —
     /// keine unbegrenzten Fremd-Antworten in Fehlern und Logs.

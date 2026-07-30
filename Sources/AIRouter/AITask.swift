@@ -132,7 +132,7 @@ public enum AITask: String, CaseIterable, Codable, Identifiable, Sendable {
 }
 
 /// Prioritaet einer KI-Aufgabe. Beeinflusst Budget-Throttling.
-public enum AITaskPriority: Int, Comparable, Sendable {
+public enum AITaskPriority: Int, Comparable, Sendable, CaseIterable, Codable {
     case critical = 0
     case high = 1
     case normal = 2

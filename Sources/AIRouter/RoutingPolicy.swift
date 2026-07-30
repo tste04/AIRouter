@@ -1,7 +1,7 @@
 import Foundation
 
 /// Routing-Policy, die bestimmt, ob eine Aufgabe lokal oder in der Cloud ausgefuehrt wird.
-public enum RoutingPolicy: String, Sendable, CaseIterable, Identifiable {
+public enum RoutingPolicy: String, Sendable, CaseIterable, Identifiable, Codable {
     case cloudOnly
     case preferLocal
     case preferCloud

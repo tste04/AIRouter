@@ -3,8 +3,8 @@ import Foundation
 /// Beschreibt ein Modell als Daten statt als String-Heuristik: Anbieter,
 /// optionaler Upgrade-Pfad (Qualitaetssteigerung), optionaler Fallback-Pfad
 /// (Degradation bei HTTP 404) sowie optionale Kosten- und Kontext-Metadaten.
-public struct ModelDescriptor: Sendable, Equatable {
-    public enum Provider: Sendable, Equatable {
+public struct ModelDescriptor: Sendable, Equatable, Codable {
+    public enum Provider: Sendable, Equatable, Codable {
         /// Anthropic via Vertex AI (`:rawPredict`).
         case anthropic
         /// Google via Vertex AI (`:generateContent`).

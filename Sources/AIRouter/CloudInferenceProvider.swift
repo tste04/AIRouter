@@ -138,6 +138,8 @@ public struct OpenAICompatibleProvider: CloudInferenceProvider {
         return request
     }
 
+    /// Hinweis: `GenerationOptions.topK` wird von Chat-Completions-APIs nicht
+    /// unterstuetzt und daher ignoriert; alle uebrigen Optionen werden gemappt.
     public func generate(model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions) async throws -> CloudResponse {
         let request = try await makeRequest(model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, stream: false)
         let (data, http) = try await transport.data(for: request)

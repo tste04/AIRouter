@@ -7,8 +7,8 @@ import Foundation
 /// und Ollama erhalten die Nachrichten nativ; ein ``LocalInferenceProvider``
 /// bekommt den Verlauf zu einem einzelnen Prompt zusammengefasst, da sein
 /// Protokoll bewusst minimal gehalten ist.
-public struct AIMessage: Sendable, Equatable, Hashable {
-    public enum Role: String, Sendable, Equatable, Hashable {
+public struct AIMessage: Sendable, Equatable, Hashable, Codable {
+    public enum Role: String, Sendable, Equatable, Hashable, Codable {
         case user
         case assistant
     }
@@ -32,7 +32,7 @@ public struct AIMessage: Sendable, Equatable, Hashable {
 
 /// Sampling-/Generierungs-Optionen pro Aufruf. Nicht gesetzte Werte (`nil`)
 /// ueberlassen die Wahl dem jeweiligen Backend bzw. dessen Defaults.
-public struct GenerationOptions: Sendable, Equatable, Hashable {
+public struct GenerationOptions: Sendable, Equatable, Hashable, Codable {
     public var temperature: Double?
     public var topP: Double?
     public var topK: Int?

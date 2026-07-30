@@ -330,6 +330,8 @@ public actor AIRouter {
         airplaneMode = enabled
     }
 
+    /// Setzt das Token-Budget pro Stundenfenster (Werte unter 10.000 werden
+    /// auf 10.000 angehoben).
     public func setHourlyBudget(_ tokens: Int) {
         hourlyTokenBudget = max(10_000, tokens)
     }

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Energiemodus, der das Routing-Verhalten zwischen Cloud- und lokalen Modellen steuert.
-public enum EnergyMode: String, CaseIterable, Identifiable, Sendable {
+public enum EnergyMode: String, CaseIterable, Identifiable, Sendable, Codable {
     /// Nur Cloud-Modelle, hochwertige Modelle, kurze Intervalle.
     case maxCloud
     /// Cloud + lokale KI, Hintergrund-Enrichment aktiv.
