@@ -829,6 +829,25 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(storage.current?.tokensUsed, 20)
     }
 
+    func testRawModelSendEnforcesBudget() async {
+        // Der rohe Modell-Pfad darf die Budgetgrenzen nicht umgehen.
+        let transport = MockTransport(responses: [])
+        let router = makeRouter(transport: transport)
+        await router.setHourlyBudget(10_000) // normal-Ceiling: 9_000
+        let hugeInput = String(repeating: "x", count: 60_000) // ~15k Tokens
+        do {
+            _ = try await router.send(model: "gemini-2.5-flash", system: hugeInput, user: "u", maxTokens: 100)
+            XCTFail("Expected budgetExhausted")
+        } catch let error as AIRouterError {
+            guard case .budgetExhausted = error else {
+                return XCTFail("Expected budgetExhausted, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        XCTAssertEqual(transport.requestCount, 0, "Budget muss vor dem Netzaufruf greifen")
+    }
+
     // MARK: - Routing-Governance
 
     func testOfflineOverridesTaskModelOverride() async {

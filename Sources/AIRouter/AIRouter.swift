@@ -486,15 +486,28 @@ public actor AIRouter {
         if isLocalTag(effectiveModel) {
             return try await callLocal(model: effectiveModel, system: system, messages: messages, maxTokens: maxTokens, options: options, task: nil).text
         }
-        try await acquireCloudSlot()
+        // Voller Budget-Preflight wie beim Task-Pfad (Prioritaet .normal) —
+        // der rohe Pfad ist kein Schlupfloch an den Kostengrenzen vorbei.
+        let estimate = estimatedRequestTokens(system: system, messages: messages, maxTokens: maxTokens)
+        let reservation = try reserveBudget(
+            priority: .normal,
+            label: "raw:\(effectiveModel)",
+            estimatedTokens: estimate,
+            estimatedCostUSD: estimatedRequestCostUSD(model: effectiveModel, estimate: estimate, maxTokens: maxTokens))
+        do {
+            try await acquireCloudSlot()
+        } catch {
+            releaseReservation(reservation)
+            throw error
+        }
         do {
             let result = try await callVertex(model: effectiveModel, system: system, messages: messages, maxTokens: maxTokens, options: options, task: nil)
             releaseCloudSlot()
-            resetHourIfNeeded()
-            settleBudget(BudgetReservation(tokens: 0, costUSD: 0, epoch: budgetEpoch), actualTokens: result.inputTokens + result.outputTokens)
+            settleBudget(reservation, actualTokens: result.inputTokens + result.outputTokens)
             return result.text
         } catch {
             releaseCloudSlot()
+            releaseReservation(reservation)
             throw error
         }
     }

@@ -18,9 +18,13 @@ extension AIRouter {
     /// `critical` umgeht die Ceilings, reserviert aber trotzdem, damit andere
     /// Aufrufer die Auslastung sehen.
     func reserveBudget(task: AITask, estimatedTokens: Int, estimatedCostUSD: Double = 0) throws -> BudgetReservation {
+        try reserveBudget(priority: task.priority, label: task.rawValue, estimatedTokens: estimatedTokens, estimatedCostUSD: estimatedCostUSD)
+    }
+
+    func reserveBudget(priority: AITaskPriority, label: String, estimatedTokens: Int, estimatedCostUSD: Double = 0) throws -> BudgetReservation {
         resetHourIfNeeded()
         let reservation = BudgetReservation(tokens: estimatedTokens, costUSD: estimatedCostUSD, epoch: budgetEpoch)
-        if task.priority == .critical {
+        if priority == .critical {
             reservedTokens += estimatedTokens
             reservedCostUSD += estimatedCostUSD
             return reservation
@@ -31,13 +35,13 @@ extension AIRouter {
             let projectedCost = costThisHourUSD + reservedCostUSD + estimatedCostUSD
             guard projectedCost <= costCeiling else {
                 throttledTasks += 1
-                DebugLog.write("[AIRouter] Kosten-Budget erreicht (\(projectedCost) > \(costCeiling) USD): \(task.rawValue) aufgeschoben")
-                throw AIRouterError.budgetExhausted(task: task.rawValue)
+                DebugLog.write("[AIRouter] Kosten-Budget erreicht (\(projectedCost) > \(costCeiling) USD): \(label) aufgeschoben")
+                throw AIRouterError.budgetExhausted(task: label)
             }
         }
         let projected = tokensUsedThisHour + reservedTokens + estimatedTokens
         let ceiling: Int
-        switch task.priority {
+        switch priority {
         case .low:
             ceiling = hourlyTokenBudget * 3 / 4
         case .normal:
@@ -47,8 +51,8 @@ extension AIRouter {
         }
         guard projected <= ceiling else {
             throttledTasks += 1
-            DebugLog.write("[AIRouter] Budget-Throttle: \(task.rawValue) aufgeschoben (projected: \(projected), ceiling: \(ceiling))")
-            throw AIRouterError.budgetExhausted(task: task.rawValue)
+            DebugLog.write("[AIRouter] Budget-Throttle: \(label) aufgeschoben (projected: \(projected), ceiling: \(ceiling))")
+            throw AIRouterError.budgetExhausted(task: label)
         }
         reservedTokens += estimatedTokens
         reservedCostUSD += estimatedCostUSD
