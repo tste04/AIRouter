@@ -533,13 +533,7 @@ public actor AIRouter {
         }
         // Voller Budget-Preflight wie beim Task-Pfad (Prioritaet .normal) —
         // der rohe Pfad ist kein Schlupfloch an den Kostengrenzen vorbei.
-        let estimate = estimatedRequestTokens(system: system, messages: messages, maxTokens: maxTokens)
-        try checkContextWindow(model: effectiveModel, estimate: estimate)
-        let reservation = try reserveBudget(
-            priority: .normal,
-            label: "raw:\(effectiveModel)",
-            estimatedTokens: estimate,
-            estimatedCostUSD: estimatedRequestCostUSD(model: effectiveModel, estimate: estimate, maxTokens: maxTokens))
+        let reservation = try reserveRawCloudBudget(model: effectiveModel, system: system, messages: messages, maxTokens: maxTokens)
         do {
             try await acquireCloudSlot()
         } catch {
@@ -647,13 +641,7 @@ public actor AIRouter {
                     return
                 }
                 do {
-                    let estimate = self.estimatedRequestTokens(system: system, messages: messages, maxTokens: maxTokens)
-                    try self.checkContextWindow(model: effectiveModel, estimate: estimate)
-                    let reservation = try self.reserveBudget(
-                        priority: .normal,
-                        label: "raw:\(effectiveModel)",
-                        estimatedTokens: estimate,
-                        estimatedCostUSD: self.estimatedRequestCostUSD(model: effectiveModel, estimate: estimate, maxTokens: maxTokens))
+                    let reservation = try self.reserveRawCloudBudget(model: effectiveModel, system: system, messages: messages, maxTokens: maxTokens)
                     do {
                         try await self.acquireCloudSlot()
                     } catch {

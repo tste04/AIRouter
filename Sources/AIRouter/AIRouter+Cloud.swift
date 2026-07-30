@@ -16,6 +16,18 @@ extension AIRouter {
         throw AIRouterError.contextWindowExceeded(model: model, estimatedTokens: estimate, window: window)
     }
 
+    /// Budget-Preflight fuer den rohen Modell-Pfad (send + sendStreaming):
+    /// Schaetzung, Kontextfenster-Pruefung, Reservierung mit Prioritaet .normal.
+    func reserveRawCloudBudget(model: String, system: String, messages: [AIMessage], maxTokens: Int) throws -> BudgetReservation {
+        let estimate = estimatedRequestTokens(system: system, messages: messages, maxTokens: maxTokens)
+        try checkContextWindow(model: model, estimate: estimate)
+        return try reserveBudget(
+            priority: .normal,
+            label: "raw:\(model)",
+            estimatedTokens: estimate,
+            estimatedCostUSD: estimatedRequestCostUSD(model: model, estimate: estimate, maxTokens: maxTokens))
+    }
+
     func runCloud(task: AITask, model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, estimate: Int) async throws -> String {
         try checkContextWindow(model: model, estimate: estimate)
         let reservation = try reserveBudget(
