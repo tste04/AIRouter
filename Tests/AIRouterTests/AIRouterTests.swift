@@ -784,6 +784,16 @@ final class AIRouterTests: XCTestCase {
         XCTAssertNil(RouterValidation.validatedCloudBase("http://api.example.com/v1"))
         XCTAssertNotNil(RouterValidation.validatedCloudBase("http://api.example.com/v1", allowInsecureHTTP: true))
 
+        // IP-Praefix-Bypass: DNS-Namen, die wie private Bereiche BEGINNEN,
+        // sind NICHT privat.
+        XCTAssertFalse(RouterValidation.isPrivateOrLoopbackHost("10.evil.com"))
+        XCTAssertFalse(RouterValidation.isPrivateOrLoopbackHost("192.168.evil.com"))
+        XCTAssertFalse(RouterValidation.isPrivateOrLoopbackHost("127.0.0.1.evil.com"))
+        XCTAssertTrue(RouterValidation.isPrivateOrLoopbackHost("10.0.0.5"))
+        XCTAssertTrue(RouterValidation.isPrivateOrLoopbackHost("172.20.1.1"))
+        XCTAssertFalse(RouterValidation.isPrivateOrLoopbackHost("172.32.0.1"))
+        XCTAssertNil(RouterValidation.validatedCloudBase("http://10.evil.com/v1"))
+
         let provider = OpenAICompatibleProvider(
             baseURL: "http://api.example.com/v1",
             apiKeyProvider: { "sk-test" },

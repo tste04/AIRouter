@@ -45,16 +45,33 @@ enum RouterValidation {
         return base
     }
 
-    /// Loopback, `.local`-mDNS und private RFC-1918-Bereiche.
+    /// Loopback, `.local`-mDNS und private RFC-1918-Bereiche. IP-Bereiche
+    /// werden als echte dotted-quad-Adressen geprueft — Hostnamen wie
+    /// `10.evil.com` zaehlen NICHT als privat (Praefix-Bypass).
     static func isPrivateOrLoopbackHost(_ host: String) -> Bool {
         let h = host.lowercased()
         if h == "localhost" || h == "::1" || h.hasSuffix(".local") { return true }
-        if h.hasPrefix("127.") || h.hasPrefix("10.") || h.hasPrefix("192.168.") { return true }
-        if h.hasPrefix("172.") {
-            let parts = h.split(separator: ".")
-            if parts.count == 4, let second = Int(parts[1]), (16...31).contains(second) { return true }
-        }
+        guard let octets = ipv4Octets(h) else { return false }
+        if octets[0] == 127 { return true }
+        if octets[0] == 10 { return true }
+        if octets[0] == 192 && octets[1] == 168 { return true }
+        if octets[0] == 172 && (16...31).contains(octets[1]) { return true }
         return false
+    }
+
+    /// Liefert die vier Oktette, wenn `host` eine wohlgeformte IPv4-Adresse ist.
+    private static func ipv4Octets(_ host: String) -> [Int]? {
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return nil }
+        var octets: [Int] = []
+        for part in parts {
+            guard !part.isEmpty, part.count <= 3,
+                  let value = Int(part), (0...255).contains(value) else {
+                return nil
+            }
+            octets.append(value)
+        }
+        return octets
     }
 
     /// Validiert einen lokalen Inferenz-Endpoint: nur `http`/`https` mit
