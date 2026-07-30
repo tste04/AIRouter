@@ -1303,3 +1303,38 @@ final class OfflineGuaranteeTests: XCTestCase {
         }
     }
 }
+
+extension OfflineGuaranteeTests {
+
+    /// `localOnly` ist eine Datenschutz-Zusage, kein Wunsch. Ein
+    /// taskModels-Override darf sie so wenig aushebeln wie den Flugmodus.
+    func testLocalOnlyPolicyBeatsTaskModelOverride() async {
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            taskModels: [.factCheck: "gemini-2.5-pro"],
+            taskRoutingPolicies: [.factCheck: .localOnly]
+        )
+        await router.configureLocalLLM(endpoint: "http://localhost:11434", model: "gemma3")
+
+        for mode in [EnergyMode.fullPower, .powerSave, .maxCloud] {
+            await router.setEnergyMode(mode)
+            let model = await router.resolvedModelName(for: .factCheck)
+            XCTAssertEqual(model, "local:gemma3",
+                           "localOnly muss den Override verdraengen (\(mode.displayName))")
+        }
+    }
+
+    /// Ohne localOnly bleibt der Override wirksam — sonst waere die Option tot.
+    func testTaskModelOverrideStillAppliesWithoutLocalOnly() async {
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            taskModels: [.factCheck: "gemini-2.5-pro"]
+        )
+        await router.configureLocalLLM(endpoint: "http://localhost:11434", model: "gemma3")
+        await router.setEnergyMode(.fullPower)
+        let model = await router.resolvedModelName(for: .factCheck)
+        XCTAssertEqual(model, "gemini-2.5-pro")
+    }
+}

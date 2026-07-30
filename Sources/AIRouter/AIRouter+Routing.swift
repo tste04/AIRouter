@@ -33,20 +33,27 @@ extension AIRouter {
         // Offline-Garantie schlaegt Modell-Overrides: bei airplaneMode/.offline
         // darf KEIN Pfad ins Netz fuehren, auch nicht ueber taskModels.
         if airplaneMode { return localModelTag }
-        if let override = taskModels[task] { return override }
 
         let policy = taskRoutingPolicies[task] ?? task.routingPolicy
+        // localOnly ist eine Datenschutz-Zusage, kein Wunsch — und Zusagen
+        // schlagen Overrides. Bisher stand die taskModels-Abfrage davor: wer
+        // fuer eine Aufgabe localOnly gesetzt UND ein Modell ueberschrieben
+        // hatte, bekam das Cloud-Modell. Der Flugmodus war schon so
+        // geschuetzt, diese Zusage nicht.
+        if policy == .localOnly { return localModelTag }
+        if let override = taskModels[task] { return override }
+
         let localAvailable = hasLocalBackend()
 
         switch energyMode {
         case .maxCloud:
-            // localOnly ist eine Datenschutz-Zusage und gilt auch unter maxCloud.
-            if policy == .localOnly { return localModelTag }
             return upgradeModel(task.defaultModel)
         case .offline:
             return localModelTag
         case .powerSave:
             switch policy {
+            // localOnly ist oben abgehandelt; der Zweig bleibt, weil `switch`
+            // erschoepfend sein muss.
             case .localOnly:
                 return localModelTag
             case .preferLocal, .preferCloud, .cloudOnly:
