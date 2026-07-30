@@ -98,14 +98,18 @@ final class AIRouterTests: XCTestCase {
             XCTAssertFalse(task.defaultModel.isEmpty, "\(task) hat kein Default-Modell")
             XCTAssertGreaterThan(task.defaultMaxTokens, 0, "\(task) hat kein Token-Budget")
             XCTAssertFalse(task.displayName.isEmpty)
+            XCTAssertNotNil(
+                ModelCatalog.default.descriptor(for: task.defaultModel),
+                "\(task): defaultModel '\(task.defaultModel)' fehlt im Standardkatalog")
         }
     }
 
-    func testRoutingPolicyDefined() {
-        for task in AITask.allCases {
-            _ = task.routingPolicy
-            _ = task.priority
-        }
+    func testRoutingPolicyAndPriorityExpectations() {
+        XCTAssertEqual(AITask.dossierSynthesis.routingPolicy, .cloudOnly)
+        XCTAssertEqual(AITask.emailRelevance.routingPolicy, .preferLocal)
+        XCTAssertEqual(AITask.memoryQuery.routingPolicy, .preferCloud)
+        XCTAssertEqual(AITask.dossierSynthesis.priority, .critical)
+        XCTAssertEqual(AITask.bundleSynthesis.priority, .low)
     }
 
     // MARK: - Routing
@@ -947,9 +951,175 @@ final class AIRouterTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
+
+    // MARK: - Lokale Pfade & Fallbacks
+
+    func testPreferLocalFallsBackToCloudOnLocalError() async throws {
+        // Lokal (Ollama) scheitert -> automatischer Cloud-Fallback.
+        let transport = MockTransport(responses: [
+            .init(status: 500, body: Data()),
+            .init(status: 200, body: googleBody(text: "cloud"))
+        ])
+        let router2 = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            taskRoutingPolicies: [.factCheck: .preferLocal],
+            accessTokenProvider: { token() },
+            transport: transport
+        )
+        await router2.configureLocalLLM(endpoint: "http://localhost:11434", model: "gemma3")
+        let result = try await router2.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        XCTAssertEqual(result, "cloud")
+        XCTAssertEqual(transport.requestCount, 2, "Erst lokal (Fehler), dann Cloud")
+    }
+
+    func testInProcessLocalProviderServesRequests() async throws {
+        let transport = MockTransport(responses: [])
+        let router2 = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            taskRoutingPolicies: [.factCheck: .localOnly],
+            accessTokenProvider: { token() },
+            transport: transport
+        )
+        await router2.configureLocalProvider(MockLocalProvider())
+        let result = try await router2.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        XCTAssertEqual(result, "in-process")
+        XCTAssertEqual(transport.requestCount, 0, "In-Process-Provider braucht kein Netz")
+    }
+
+    func testOllamaStreamingParsesNDJSON() async throws {
+        let lines = [
+            "{\"message\":{\"content\":\"Ha\"}}",
+            "{\"message\":{\"content\":\"llo\"}}",
+            "{\"prompt_eval_count\":3,\"eval_count\":2,\"done\":true}"
+        ]
+        let transport = MockTransport(responses: [], streamLines: lines)
+        let router2 = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            taskRoutingPolicies: [.factCheck: .localOnly],
+            accessTokenProvider: { token() },
+            transport: transport
+        )
+        await router2.configureLocalLLM(endpoint: "http://localhost:11434", model: "gemma3")
+        var chunks: [String] = []
+        for try await chunk in await router2.sendStreaming(task: .factCheck, system: "s", user: "u") {
+            chunks.append(chunk)
+        }
+        XCTAssertEqual(chunks.joined(), "Hallo")
+        let status = await router2.budgetStatus()
+        XCTAssertEqual(status.tokensUsed, 0, "Lokales Streaming zahlt nicht aufs Cloud-Budget ein")
+    }
+
+    func testStreamingConsumerCanAbort() async throws {
+        let lines = [
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"eins\"}]}}]}",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"zwei\"}]}}]}"
+        ]
+        let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "ok"))], streamLines: lines)
+        let router = makeRouter(transport: transport)
+        var received = 0
+        for try await _ in await router.sendStreaming(task: .factCheck, system: "s", user: "u") {
+            received += 1
+            break // Konsument bricht ab
+        }
+        XCTAssertEqual(received, 1)
+        // Router bleibt nach Abbruch voll funktionsfaehig.
+        let result = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        XCTAssertEqual(result, "ok")
+    }
+
+    func testStreamingHTTPErrorReleasesReservation() async {
+        let transport = MockTransport(responses: [], streamLines: [], streamStatus: 503)
+        let router = makeRouter(transport: transport)
+        do {
+            for try await _ in await router.sendStreaming(task: .factCheck, system: "s", user: "u") {}
+            XCTFail("Expected apiError")
+        } catch let error as AIRouterError {
+            guard case .apiError(503, _) = error else {
+                return XCTFail("Expected apiError(503), got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        let status = await router.budgetStatus()
+        XCTAssertEqual(status.tokensReserved, 0, "Reservierung muss nach Stream-Fehler frei sein")
+    }
+
+    // MARK: - Budget-Prioritaeten & Retry
+
+    func testCriticalPriorityBypassesBudgetCeilings() async throws {
+        // dossierSynthesis ist critical: passiert trotz gesprengtem Ceiling.
+        let transport = MockTransport(responses: [.init(status: 200, body: anthropicBody(text: "wichtig"))])
+        let router = makeRouter(transport: transport)
+        await router.setHourlyBudget(10_000)
+        let result = try await router.send(task: .dossierSynthesis, system: "s", user: "u", maxTokens: 20_000)
+        XCTAssertEqual(result, "wichtig")
+        XCTAssertEqual(transport.requestCount, 1)
+    }
+
+    func testTransientRetrySucceedsAfter503() async throws {
+        let transport = MockTransport(responses: [
+            .init(status: 503, body: Data()),
+            .init(status: 200, body: googleBody(text: "erholt"))
+        ])
+        let router = makeRouter(transport: transport, retryPolicy: RetryPolicy(maxTransientRetries: 1, baseDelay: 0))
+        let result = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        XCTAssertEqual(result, "erholt")
+        XCTAssertEqual(transport.requestCount, 2)
+    }
+
+    // MARK: - EnergyMode x Policy Matrix
+
+    func testEnergyModePolicyMatrix() async {
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            taskRoutingPolicies: [.factCheck: .localOnly, .meetingSummary: .preferLocal]
+        )
+        await router.configureLocalLLM(endpoint: "http://localhost:11434", model: "gemma3")
+
+        await router.setEnergyMode(.powerSave)
+        var model = await router.resolvedModelName(for: .factCheck)
+        XCTAssertEqual(model, "local:gemma3", "powerSave + localOnly -> lokal")
+        model = await router.resolvedModelName(for: .meetingSummary)
+        XCTAssertEqual(model, "gemini-2.5-flash", "powerSave + preferLocal -> Cloud-Default")
+
+        await router.setEnergyMode(.fullPower)
+        model = await router.resolvedModelName(for: .meetingSummary)
+        XCTAssertEqual(model, "local:gemma3", "fullPower + preferLocal + Backend -> lokal")
+        model = await router.resolvedModelName(for: .dossierSynthesis)
+        XCTAssertEqual(model, "claude-opus-4-6", "fullPower + cloudOnly -> Cloud")
+
+        // Ohne lokales Backend faellt preferLocal auf den Cloud-Default zurueck.
+        let bare = AIRouter(vertexRegion: "us-central1", vertexProject: "demo")
+        await bare.setEnergyMode(.fullPower)
+        model = await bare.resolvedModelName(for: .emailRelevance) // preferLocal
+        XCTAssertEqual(model, "gemini-2.5-flash")
+    }
 }
 
 // MARK: - Test-Provider & -Storage
+
+/// Minimaler In-Process-Provider fuer Router-Tests.
+struct MockLocalProvider: LocalInferenceProvider {
+    var isReady: Bool {
+        get async { true }
+    }
+
+    func generate(system: String, user: String, maxTokens: Int) async throws -> (text: String, inputTokens: Int, outputTokens: Int) {
+        (text: "in-process", inputTokens: 2, outputTokens: 3)
+    }
+
+    func generateStream(system: String, user: String, maxTokens: Int) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield("in-")
+            continuation.yield("process")
+            continuation.finish()
+        }
+    }
+}
 
 /// Minimaler CloudInferenceProvider fuer Router-Tests.
 struct MockCloudProvider: CloudInferenceProvider {
