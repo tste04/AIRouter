@@ -47,10 +47,19 @@ public struct URLSessionTransport: HTTPTransport {
         guard let http = response as? HTTPURLResponse else {
             throw AIRouterError.noResponse
         }
+        // Groessenlimit gilt auch fuer Streams — ein endloser SSE-Strom darf
+        // den Prozess nicht ueber den Speicher druecken.
+        let limit = maxResponseBytes
         let stream = AsyncThrowingStream<String, Error> { continuation in
             let task = Task {
+                var totalBytes = 0
                 do {
                     for try await line in bytes.lines {
+                        totalBytes += line.utf8.count + 1
+                        guard totalBytes <= limit else {
+                            continuation.finish(throwing: AIRouterError.responseTooLarge(limitBytes: limit))
+                            return
+                        }
                         continuation.yield(line)
                     }
                     continuation.finish()
