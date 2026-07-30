@@ -835,7 +835,7 @@ final class AIRouterTests: XCTestCase {
         let storage = MemoryStorage(initial: nil)
         await router.configureStorage(storage)
         _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
-        try await Task.sleep(for: .milliseconds(100)) // fire-and-forget Save abwarten
+        await router.flushPersistence() // deterministisch statt Sleep-Race
         XCTAssertEqual(storage.current?.tokensUsed, 20)
     }
 

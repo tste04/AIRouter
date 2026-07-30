@@ -100,7 +100,8 @@ extension AIRouter {
         max(1, rawSecondsUntilReset() + 1)
     }
 
-    /// Speichert den Budget-Zustand fire-and-forget in den konfigurierten Storage.
+    /// Speichert den Budget-Zustand asynchron, aber in Aufruf-Reihenfolge
+    /// serialisiert — ein aelterer Snapshot kann einen neueren nicht ueberschreiben.
     func persistBudget() {
         guard let storage else { return }
         let state = PersistedBudgetState(
@@ -109,6 +110,10 @@ extension AIRouter {
             throttled: throttledTasks,
             hourStarted: currentHourStart
         )
-        Task { await storage.saveBudgetState(state) }
+        let previous = persistChain
+        persistChain = Task {
+            await previous?.value
+            await storage.saveBudgetState(state)
+        }
     }
 }

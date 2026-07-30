@@ -81,6 +81,12 @@ public actor AIRouter {
     var customProviders: [String: CloudInferenceProvider] = [:]
     /// Optionaler Persistenz-Hook: Budget-Zustand ueberlebt App-Neustarts.
     var storage: RouterStorage?
+    /// Serialisiert Persistenz-Schreibvorgaenge: verhindert, dass ein aelterer
+    /// Snapshot einen neueren ueberholt und ueberschreibt.
+    var persistChain: Task<Void, Never>?
+    /// Generation der Lokal-Konfiguration: ein langsamer aelterer
+    /// configureLocalLLM-Aufruf darf eine neuere Konfiguration nicht ueberschreiben.
+    var localConfigGeneration: UInt64 = 0
     /// Wird vor jedem Cloud-Versand auf System-Prompt und Nachrichteninhalte
     /// angewandt (z. B. PII-Redaktion). Lokale Aufrufe bleiben unveraendert.
     var cloudPreflight: (@Sendable (String) -> String)?
@@ -244,8 +250,9 @@ public actor AIRouter {
         if !endpoint.isEmpty && validated == nil {
             DebugLog.write("[AIRouter] Ungueltiger lokaler Endpoint verworfen (erlaubt: http/https mit Host)")
         }
+        localConfigGeneration += 1
+        let generation = localConfigGeneration
         let sanitizedEndpoint = validated ?? ""
-        self.localLLMNumCtx = max(512, numCtx)
 
         // Kein Modell gewaehlt -> automatisch ein installiertes Ollama-Modell entdecken.
         var resolved = model
@@ -261,6 +268,9 @@ public actor AIRouter {
         }
         // Endpoint und Modell erst NACH der Discovery gemeinsam setzen —
         // waehrend des await darf kein Aufrufer einen Endpoint ohne Modell sehen.
+        // Und nur, wenn kein neuerer configure-Aufruf dazwischenkam.
+        guard generation == localConfigGeneration else { return }
+        self.localLLMNumCtx = max(512, numCtx)
         self.localLLMEndpoint = sanitizedEndpoint
         self.localLLMModel = resolved
 
@@ -377,6 +387,12 @@ public actor AIRouter {
                 DebugLog.write("[AIRouter] Budget-Zustand wiederhergestellt (\(state.tokensUsed) Tokens, Fenster seit \(Int(elapsed))s)")
             }
         }
+    }
+
+    /// Wartet, bis alle ausstehenden Budget-Persistierungen geschrieben sind —
+    /// z. B. vor App-Terminierung, damit der letzte Stand nicht verloren geht.
+    public func flushPersistence() async {
+        await persistChain?.value
     }
 
     /// Latenz-/Fehler-Statistik pro Modell seit Prozessstart.
