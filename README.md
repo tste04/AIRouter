@@ -41,8 +41,9 @@ kostenpflichtig (siehe [Lizenz](#lizenz) / [COMMERCIAL.md](COMMERCIAL.md)).
 | Aufgaben-Routing | `send(task:…)` wählt das Modell anhand `AITask` (Default-Modell, Token-Limit, Priorität, Policy). |
 | Energiemodi | `setEnergyMode(_:)` — `maxCloud`, `fullPower`, `offline`, `powerSave` steuern Cloud-vs-Lokal global. |
 | Routing-Policies | Pro Aufgabe `cloudOnly` / `preferCloud` / `preferLocal` / `localOnly`, überschreibbar via `taskRoutingPolicies`. |
-| Governance-Garantien | `offline`/`airplaneMode` schlägt Modell-Overrides; `localOnly` gilt auch unter `maxCloud`. |
-| Cloud ↔ Lokal-Fallback | Automatischer Wechsel bei Fehlern oder erschöpftem Budget — auch beim Streaming. |
+| Governance-Garantien | `offline`/`airplaneMode` und `localOnly` schlagen Modell-Overrides und Energiemodus. Im Flugmodus führt **kein** Pfad ins Netz — auch nicht, wenn das lokale Modell ausfällt. |
+| Cloud → Lokal bei Budget | Ist das Stundenbudget erschöpft, wechselt der Router auf ein lokales Backend, sofern vorhanden — beim `send` wie beim Streaming. |
+| Lokal → Cloud bei Fehler | Nur unter `preferLocal` und nur außerhalb des Flugmodus. Der Streaming-Pfad kennt diesen Wechsel nicht: dort wird der lokale Fehler durchgereicht. |
 | Kontextfenster-Schutz | Anfragen über dem Katalog-Kontextfenster scheitern früh mit `contextWindowExceeded`. |
 
 ### Backends
@@ -440,6 +441,12 @@ Details und Meldeweg für Schwachstellen: [SECURITY.md](SECURITY.md).
 ## Anforderungen
 
 - macOS 13+ / iOS 16+ (nutzt `ContinuousClock` und `os.Logger`)
+
+  Damit liegt dieses Paket **eine Stufe über dem übrigen Zielbild-Ökosystem**,
+  das auf macOS 12 baut (AIGateway, OutputGuardrails, engram). Wer AIRouter dort
+  einbinden will, braucht entweder den höheren Deployment-Floor oder eine
+  Rückportierung — `ContinuousClock` ist die einzige Sperre und ließe sich über
+  `mach_continuous_time` ersetzen. Bisher ist das nicht getan.
 - Swift 5.7+ (Xcode 14.1+)
 - Keine externen Abhängigkeiten
 
@@ -447,7 +454,7 @@ Details und Meldeweg für Schwachstellen: [SECURITY.md](SECURITY.md).
 
 ```sh
 swift build
-swift test   # 61 Tests, laufen komplett gegen Mocks — kein Netz, keine Credentials
+swift test   # 65 Tests, laufen komplett gegen Mocks — kein Netz, keine Credentials
 ```
 
 CI (GitHub Actions, macOS) baut und testet jeden Push auf `main` und jeden
