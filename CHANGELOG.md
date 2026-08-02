@@ -6,7 +6,7 @@ Release getaggt ist. Bis dahin sammelt `Unreleased` den Stand von `main`.
 
 ## [Unreleased]
 
-### Behoben (Komplettreview, adversarial verifiziert)
+### Behoben
 - Budget-Reservierungen tragen eine Fenster-Epoche: der Stunden-Reset kann
   laufende Reservierungen nicht mehr korrumpieren (Überbuchung).
 - USD-Kosten-Budget reserviert in-flight-Kosten mit — parallele Aufrufe
@@ -20,7 +20,7 @@ Release getaggt ist. Bis dahin sammelt `Unreleased` den Stand von `main`.
   SSE-Abbrüche zählen für Breaker/Statistik; Google-Antworten werden über alle
   `parts` zusammengesetzt; Persistenz-Snapshots serialisiert.
 
-### Hinzugefügt (Review-Erweiterungen)
+### Hinzugefügt
 - `healthStatus()`, `availableModels()`, `flushPersistence()`,
   `currentEnergyMode`/`isAirplaneMode`/`localModelName`-Getter.
 - `setBreakerParameters(...)`, `setBudgetWindow(seconds:)`,
@@ -30,8 +30,6 @@ Release getaggt ist. Bis dahin sammelt `Unreleased` den Stand von `main`.
   Streaming; `GenerationOptions` in allen Single-Turn-Overloads.
 - Codable/Equatable/CaseIterable-Konformitäten auf Konfigurationstypen.
 - CI: zusätzlicher iOS-Build-Job.
-
-### Hinzugefügt
 - Task-basiertes Routing über Energiemodi (`maxCloud`/`fullPower`/`offline`/`powerSave`)
   und Routing-Policies (`cloudOnly`/`preferCloud`/`preferLocal`/`localOnly`).
 - Vertex AI (Anthropic `:rawPredict`, Google `:generateContent`) mit
