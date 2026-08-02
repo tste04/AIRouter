@@ -1236,10 +1236,9 @@ final class Counter: @unchecked Sendable {
 
 // MARK: - Offline-Garantie bei lokalem Fehler
 //
-// Der Flugmodus ist eine Zusage, keine Praeferenz. Unter `preferLocal` fiel der
-// Router bei einem lokalen Fehler auf die Cloud zurueck — und zwar auch mit
-// eingeschaltetem Flugmodus. Der wahrscheinlichste Fehlerfall ueberhaupt ist,
-// dass Ollama nicht laeuft; genau dann ging der Prompt still ins Netz.
+// Der Flugmodus ist eine Zusage, keine Praeferenz: auch wenn das lokale Modell
+// scheitert (etwa weil Ollama nicht laeuft), darf unter `preferLocal` kein
+// Prompt ins Netz gehen.
 
 /// Lokaler Anbieter, der bereit meldet und dann scheitert — die Form, die den
 /// Fallback ausloest.
@@ -1286,9 +1285,9 @@ final class OfflineGuaranteeTests: XCTestCase {
         }
     }
 
-    /// Ohne Flugmodus bleibt der Fallback wie er war — sonst waere die
-    /// Aenderung eine Verschlechterung fuer alle anderen.
-    func testLocalFailureOutsideAirplaneModeStillFallsBack() async {
+    /// Ohne Flugmodus muss der Cloud-Fallback greifen — sonst waere
+    /// `preferLocal` bei lokalem Ausfall nutzlos.
+    func testLocalFailureOutsideAirplaneModeFallsBackToCloud() async {
         let router = await makeRouter()
         await router.setEnergyMode(.fullPower)
 

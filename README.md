@@ -450,7 +450,7 @@ Details und Meldeweg für Schwachstellen: [SECURITY.md](SECURITY.md).
 
 ```sh
 swift build
-swift test   # 65 Tests, laufen komplett gegen Mocks — kein Netz, keine Credentials
+swift test   # alle Tests laufen gegen Mocks — kein Netz, keine Credentials
 ```
 
 CI (GitHub Actions, macOS) baut und testet jeden Push auf `main` und jeden

@@ -481,10 +481,9 @@ public actor AIRouter {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                // Der Offline-Modus ist eine Zusage an den Nutzer, keine
-                // Praeferenz. Genau hier war sie durchbrochen: laeuft das lokale
-                // Modell nicht (Ollama nicht gestartet — der wahrscheinlichste
-                // Fehlerfall ueberhaupt), ging der Prompt still in die Cloud.
+                // Der Offline-Modus ist eine Zusage, keine Praeferenz: schlaegt
+                // das lokale Modell fehl (Ollama nicht gestartet ist der
+                // haeufigste Fall), darf der Prompt trotzdem nicht in die Cloud.
                 // Wer den Flugmodus einschaltet, will lieber einen Fehler als
                 // eine Uebertragung.
                 guard !airplaneMode else {

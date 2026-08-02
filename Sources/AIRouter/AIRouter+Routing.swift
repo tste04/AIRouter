@@ -35,11 +35,8 @@ extension AIRouter {
         if airplaneMode { return localModelTag }
 
         let policy = taskRoutingPolicies[task] ?? task.routingPolicy
-        // localOnly ist eine Datenschutz-Zusage, kein Wunsch — und Zusagen
-        // schlagen Overrides. Bisher stand die taskModels-Abfrage davor: wer
-        // fuer eine Aufgabe localOnly gesetzt UND ein Modell ueberschrieben
-        // hatte, bekam das Cloud-Modell. Der Flugmodus war schon so
-        // geschuetzt, diese Zusage nicht.
+        // localOnly ist eine Datenschutz-Zusage, kein Wunsch — Zusagen schlagen
+        // Overrides. Deshalb steht die Policy-Pruefung VOR taskModels.
         if policy == .localOnly { return localModelTag }
         if let override = taskModels[task] { return override }
 

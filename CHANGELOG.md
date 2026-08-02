@@ -6,20 +6,6 @@ Release getaggt ist. Bis dahin sammelt `Unreleased` den Stand von `main`.
 
 ## [Unreleased]
 
-### Behoben
-- Budget-Reservierungen tragen eine Fenster-Epoche: der Stunden-Reset kann
-  laufende Reservierungen nicht mehr korrumpieren (Überbuchung).
-- USD-Kosten-Budget reserviert in-flight-Kosten mit — parallele Aufrufe
-  können das Ceiling nicht mehr gemeinsam durchbrechen.
-- Offline-Garantie (`airplaneMode`/`.offline`) schlägt `taskModels`-Overrides;
-  `localOnly` gilt auch unter `maxCloud`.
-- Raw-Pfad `send(model:)` unterliegt vollem Token-/Kosten-Budget-Preflight.
-- `isPrivateOrLoopbackHost` prüft echte IPv4-Oktette (kein `10.evil.com`-Bypass);
-  Größenlimit gilt auch für den Streaming-Transport.
-- Transiente Transportfehler werden retried; 404-Fallback mit Zyklus-Schutz;
-  SSE-Abbrüche zählen für Breaker/Statistik; Google-Antworten werden über alle
-  `parts` zusammengesetzt; Persistenz-Snapshots serialisiert.
-
 ### Hinzugefügt
 - `healthStatus()`, `availableModels()`, `flushPersistence()`,
   `currentEnergyMode`/`isAirplaneMode`/`localModelName`-Getter.
@@ -41,9 +27,15 @@ Release getaggt ist. Bis dahin sammelt `Unreleased` den Stand von `main`.
 - Multi-Turn-Konversationen (`AIMessage`) und `GenerationOptions`
   (Temperatur, top-p/k, Stop-Sequenzen, `jsonMode`, `requestTimeout`).
 - Natives Cloud-Streaming via SSE inkl. Budget-Reservierung.
-- Reservierungs-Budget (Tokens/Stunde) mit prioritätsbasiertem Throttling,
-  zusätzlichem USD-Kosten-Budget, optionaler Warteschlange
-  (`setQueueOnBudgetExhausted`) und Persistenz (`RouterStorage`).
+- Reservierungs-Budget (Tokens/Stunde) mit prioritätsbasiertem Throttling und
+  Fenster-Epoche (Reservierungen überstehen den Stunden-Reset unversehrt);
+  USD-Kosten-Budget inkl. in-flight-Reservierung; optionale Warteschlange
+  (`setQueueOnBudgetExhausted`); Persistenz (`RouterStorage`, serialisierte
+  Snapshots). Gilt auf allen Pfaden, auch dem rohen Modell-Pfad.
+- Retries für HTTP 429/5xx und transiente Transportfehler (Backoff + Jitter);
+  404-Modell-Fallback mit Zyklus-Schutz.
+- Offline-Garantie: `airplaneMode`/`.offline` und `localOnly` schlagen
+  Modell-Overrides und Energiemodus; im Flugmodus führt kein Pfad ins Netz.
 - Circuit-Breaker pro Modell, Opt-in-Antwort-Cache, Konkurrenzlimit für
   Cloud-Aufrufe, Latenz-/Fehler-Statistik (`modelStats()`).
 - Kosten-Telemetrie aus Katalog-Preisen (`AIUsageInfo.costUSD`,
@@ -51,11 +43,12 @@ Release getaggt ist. Bis dahin sammelt `Unreleased` den Stand von `main`.
 
 ### Sicherheit
 - Allowlist-Validierung für Region/Projekt/Modellnamen und lokale Endpoints;
-  `http://` für Cloud-Provider nur zu Loopback-/privaten Hosts.
-- Response-Größenlimit (50 MB) im Standard-Transport; Fehler-Bodies auf
-  500 Zeichen gekappt; Datei-Logs `0600`; monotone Budget-Uhr.
+  `http://` für Cloud-Provider nur zu Loopback-/privaten Hosts (echte
+  IPv4-Prüfung, keine Präfix-Heuristik).
+- Response-Größenlimit (50 MB) für Daten- und Streaming-Transport; Fehler-Bodies
+  auf 500 Zeichen gekappt; Datei-Logs `0600`; monotone Budget-Uhr.
 
 ### Infrastruktur
-- CI (GitHub Actions, macOS): `swift build` + `swift test` (47 mock-basierte
-  Tests, ohne Netz) bei jedem Push und PR.
+- CI (GitHub Actions): macOS-Build + Tests (komplett mock-basiert, ohne Netz)
+  und iOS-Build bei jedem Push und PR.
 - Swift 5.7+ (Xcode 14.1+), macOS 13+ / iOS 16+, keine externen Dependencies.
