@@ -1098,6 +1098,57 @@ final class AIRouterTests: XCTestCase {
         model = await bare.resolvedModelName(for: .emailRelevance) // preferLocal
         XCTAssertEqual(model, "gemini-2.5-flash")
     }
+
+    // MARK: - Provider-Streaming (SSE der Direkt-Provider)
+
+    func testOpenAIProviderStreamsSSE() async throws {
+        let lines = [
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Hal\"}}]}",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}",
+            "data: {\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}",
+            "data: [DONE]"
+        ]
+        let transport = MockTransport(responses: [], streamLines: lines)
+        let provider = OpenAICompatibleProvider(
+            baseURL: "https://api.example.com/v1",
+            apiKeyProvider: { "k" },
+            transport: transport
+        )
+        var text = ""
+        var usage: (input: Int, output: Int)?
+        let events = try await provider.stream(model: "gpt-4o", system: "s", messages: [.user("u")], maxTokens: 32, options: .default)
+        for try await event in events {
+            switch event {
+            case .text(let chunk): text += chunk
+            case .usage(let input, let output): usage = (input, output)
+            }
+        }
+        XCTAssertEqual(text, "Hallo")
+        XCTAssertEqual(usage?.input, 5)
+        XCTAssertEqual(usage?.output, 2)
+    }
+
+    func testAnthropicDirectProviderStreamsSSE() async throws {
+        let lines = [
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":7}}}",
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"Hi\"}}",
+            "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":3}}"
+        ]
+        let transport = MockTransport(responses: [], streamLines: lines)
+        let provider = AnthropicDirectProvider(apiKeyProvider: { "k" }, transport: transport)
+        var text = ""
+        var usage: (input: Int, output: Int)?
+        let events = try await provider.stream(model: "claude-sonnet-4-6", system: "s", messages: [.user("u")], maxTokens: 32, options: .default)
+        for try await event in events {
+            switch event {
+            case .text(let chunk): text += chunk
+            case .usage(let input, let output): usage = (input, output)
+            }
+        }
+        XCTAssertEqual(text, "Hi")
+        XCTAssertEqual(usage?.input, 7)
+        XCTAssertEqual(usage?.output, 3)
+    }
 }
 
 // MARK: - Test-Provider & -Storage
