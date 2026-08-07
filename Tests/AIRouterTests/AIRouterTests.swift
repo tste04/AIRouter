@@ -1099,6 +1099,22 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(model, "gemini-2.5-flash")
     }
 
+    func testRaisingConcurrencyLimitWakesWaiters() async throws {
+        let transport = GatedTransport(body: googleBody(text: "ok"))
+        let router = makeRouter(transport: transport)
+        await router.setMaxConcurrentCloudCalls(1)
+        let first = Task { try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100) }
+        let second = Task { try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100) }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(transport.startedCount, 1, "Limit 1: zweiter Call wartet")
+        await router.setMaxConcurrentCloudCalls(2)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(transport.startedCount, 2, "Limit-Erhoehung muss Wartende sofort wecken")
+        transport.open()
+        _ = try await first.value
+        _ = try await second.value
+    }
+
     // MARK: - Provider-Streaming (SSE der Direkt-Provider)
 
     func testOpenAIProviderStreamsSSE() async throws {
