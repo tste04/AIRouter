@@ -218,7 +218,7 @@ final class AIRouterTests: XCTestCase {
         let box = UsageBox()
         await router.setUsageCallback { info in box.store(info) }
         _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
-        try await Task.sleep(for: .milliseconds(50)) // allow callback dispatch
+        // Der Callback laeuft synchron innerhalb des send-Aufrufs.
         let captured = box.value
         XCTAssertEqual(captured?.inputTokens, 3)
         XCTAssertEqual(captured?.outputTokens, 4)
@@ -509,7 +509,6 @@ final class AIRouterTests: XCTestCase {
         let box = UsageBox()
         await router.setUsageCallback { info in box.store(info) }
         _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
-        try await Task.sleep(for: .milliseconds(50))
 
         // gemini-2.5-flash: 0.30/MTok in, 2.50/MTok out -> 0.03 + 0.025 = 0.055 USD
         let cost = box.value?.costUSD
