@@ -1115,6 +1115,60 @@ final class AIRouterTests: XCTestCase {
         _ = try await second.value
     }
 
+    // MARK: - Auth-Kanten
+
+    func testRepeated401FailsAfterSingleRefresh() async {
+        // Genau ein Token-Refresh; ein zweites 401 ist ein echter Fehler.
+        let transport = MockTransport(responses: [
+            .init(status: 401, body: Data()),
+            .init(status: 401, body: Data())
+        ])
+        let router = makeRouter(transport: transport)
+        do {
+            _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+            XCTFail("Expected apiError(401)")
+        } catch let error as AIRouterError {
+            guard case .apiError(401, _) = error else {
+                return XCTFail("Expected apiError(401), got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        XCTAssertEqual(transport.requestCount, 2)
+    }
+
+    func testEmptyTokenFailsAuthBeforeNetwork() async {
+        let transport = MockTransport(responses: [])
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            accessTokenProvider: { AccessToken(value: "", lifetime: 3600) },
+            transport: transport
+        )
+        do {
+            _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+            XCTFail("Expected authFailed")
+        } catch let error as AIRouterError {
+            guard case .authFailed = error else {
+                return XCTFail("Expected authFailed, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        XCTAssertEqual(transport.requestCount, 0)
+    }
+
+    func testOllamaServiceReturnsEmptyOnInvalidEndpointOrError() async {
+        let transport = MockTransport(responses: [.init(status: 500, body: Data())])
+        let service = OllamaService(transport: transport)
+        let invalid = await service.fetchModels(endpoint: "ftp://nope")
+        XCTAssertTrue(invalid.isEmpty)
+        XCTAssertEqual(transport.requestCount, 0, "Ungueltiger Endpoint darf kein Netz beruehren")
+        let errored = await service.fetchModels(endpoint: "http://localhost:11434")
+        XCTAssertTrue(errored.isEmpty, "HTTP-Fehler liefert leere Liste statt zu werfen")
+        XCTAssertEqual(transport.requestCount, 1)
+    }
+
     // MARK: - Provider-Streaming (SSE der Direkt-Provider)
 
     func testOpenAIProviderStreamsSSE() async throws {
