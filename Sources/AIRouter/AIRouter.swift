@@ -296,6 +296,10 @@ public actor AIRouter {
         return !localLLMEndpoint.isEmpty && !localLLMModel.isEmpty
     }
 
+    /// Der konfigurierte lokale Ollama-Endpoint (leer = keiner).
+    public var localEndpoint: String { localLLMEndpoint }
+
+    @available(*, deprecated, renamed: "localEndpoint")
     public func localLLMEndpointValue() -> String {
         localLLMEndpoint
     }

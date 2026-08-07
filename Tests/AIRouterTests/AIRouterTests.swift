@@ -310,14 +310,14 @@ final class AIRouterTests: XCTestCase {
         await router.configureLocalLLM(endpoint: "file:///etc/passwd", model: "gemma3")
         let ready = await router.isLocalModelReady()
         XCTAssertFalse(ready, "Ungueltiger Endpoint darf lokale Inferenz nicht aktivieren")
-        let stored = await router.localLLMEndpointValue()
+        let stored = await router.localEndpoint
         XCTAssertTrue(stored.isEmpty)
     }
 
     func testLocalEndpointNormalized() async {
         let router = AIRouter(vertexRegion: "us-central1", vertexProject: "demo")
         await router.configureLocalLLM(endpoint: "http://localhost:11434/", model: "gemma3")
-        let stored = await router.localLLMEndpointValue()
+        let stored = await router.localEndpoint
         XCTAssertEqual(stored, "http://localhost:11434")
     }
 
