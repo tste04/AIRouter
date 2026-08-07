@@ -6,6 +6,12 @@ Release getaggt ist. Bis dahin sammelt `Unreleased` den Stand von `main`.
 
 ## [Unreleased]
 
+### Geändert
+- Lizenz: PolyForm Noncommercial 1.0.0 mit kommerzieller Lizenzierung
+  (Dual-Licensing, siehe `COMMERCIAL.md`). Der zeitweise unter MIT
+  veröffentlichte Stand (bis `c5e28bf`) behält für diesen Snapshot die
+  MIT-Rechte.
+
 ### Hinzugefügt
 - `healthStatus()`, `availableModels()`, `flushPersistence()`,
   `currentEnergyMode`/`isAirplaneMode`/`localModelName`-Getter.

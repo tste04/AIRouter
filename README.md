@@ -11,7 +11,9 @@ Keine Auth-Strategie und kein Cloud-Projekt sind fest verdrahtet:
 Authentifizierung, lokales Backend und Modell-/Routing-Konfiguration werden
 vollständig von außen injiziert.
 
-**Lizenz:** [MIT](LICENSE) — frei für private und kommerzielle Nutzung.
+**Lizenz:** PolyForm Noncommercial 1.0.0 — Quellcode offen, nichtkommerzielle
+Nutzung frei; kommerzielle Nutzung erfordert eine Lizenz (siehe
+[Lizenz](#lizenz) / [COMMERCIAL.md](COMMERCIAL.md)).
 
 ## Inhalt
 
@@ -430,9 +432,12 @@ Details und Meldeweg für Schwachstellen: [SECURITY.md](SECURITY.md).
 
 | Datei | Inhalt |
 | --- | --- |
-| [LICENSE](LICENSE) | MIT-Lizenz. |
+| [LICENSE.md](LICENSE.md) | PolyForm Noncommercial 1.0.0 (Dual-License-Header). |
+| [COMMERCIAL.md](COMMERCIAL.md) | Kommerzielle Lizenzierung — Konditionen auf Verhandlungsbasis, Kontakt. |
+| [LICENSING.md](LICENSING.md) | Komponentenübergreifende Lizenz-Policy. |
 | [SECURITY.md](SECURITY.md) | Sicherheitsmodell und Meldeweg für Schwachstellen. |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Beitragsregeln und harte Invarianten. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Beitragsregeln inkl. CLA-Pflicht und harte Invarianten. |
+| [docs/CLA.md](docs/CLA.md) | Contributor License Agreement. |
 
 ## Anforderungen
 
@@ -458,13 +463,24 @@ Pull Request: [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Lizenz
 
-AIRouter steht unter der [MIT-Lizenz](LICENSE) — frei nutzbar, auch kommerziell.
+AIRouter ist **dual-lizenziert** — der Quellcode ist offen einsehbar:
+
+- **Nichtkommerzielle Nutzung** ist kostenlos unter der
+  [PolyForm Noncommercial License 1.0.0](LICENSE.md).
+- **Kommerzielle Nutzung** (Einsatz im Unternehmen, Einbettung in ein Produkt,
+  Teil eines bezahlten Dienstes) erfordert eine kommerzielle Lizenz — Konditionen
+  auf Verhandlungsbasis, siehe [COMMERCIAL.md](COMMERCIAL.md).
+
+Hinweis: Der Stand bis einschließlich Commit `c5e28bf` war zeitweise unter MIT
+veröffentlicht; für diesen Snapshot bleiben einmal erworbene MIT-Rechte
+bestehen. Alle späteren Stände unterliegen der obigen Dual-Lizenz.
+
+Kommerzielle Anfragen: **[hello@tstellmacher.com](mailto:hello@tstellmacher.com)**
 
 Copyright 2026 Tommy Stellmacher.
 
 ## Beiträge
 
-Issues und Pull Requests sind willkommen — Details in
-[CONTRIBUTING.md](CONTRIBUTING.md). Kein CLA; Beiträge gelten als unter der
-Projektlizenz eingereicht.
+Beiträge sind willkommen und erfordern das CLA ([docs/CLA.md](docs/CLA.md)) —
+Details in [CONTRIBUTING.md](CONTRIBUTING.md).
 
