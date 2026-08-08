@@ -180,6 +180,7 @@ extension AIRouter {
                 transientAttempts += 1
                 let body = String(data: data, encoding: .utf8) ?? ""
                 DebugLog.write("[AIRouter] HTTP \(http.statusCode) fuer \(currentModel) (Retry \(transientAttempts)): \(body.prefix(120))")
+                emitEvent(.retrying(model: currentModel, attempt: transientAttempts))
                 try await Task.sleep(for: .seconds(Self.backoffDelay(policy: retryPolicy, attempt: transientAttempts)))
                 continue
 

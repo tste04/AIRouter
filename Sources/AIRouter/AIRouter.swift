@@ -76,6 +76,7 @@ public actor AIRouter {
     var cachedToken: String?
     var tokenExpiresAt: Date?
     var usageCallback: (@Sendable (AIUsageInfo) -> Void)?
+    var eventCallback: (@Sendable (RouterEvent) -> Void)?
     /// Registrierte ``CloudInferenceProvider`` fuer Modelle mit
     /// `provider: .custom(id)` (OpenAI-kompatibel, Anthropic-direkt, eigene).
     var customProviders: [String: CloudInferenceProvider] = [:]
@@ -317,6 +318,13 @@ public actor AIRouter {
         self.usageCallback = callback
     }
 
+    /// Meldet Routing-/Governance-Ereignisse (``RouterEvent``) — Fallbacks,
+    /// Budget-Drosselung, Breaker-Zustandswechsel, Retries — maschinenlesbar
+    /// an die App. `nil` entfernt den Hook.
+    public func setEventCallback(_ callback: (@Sendable (RouterEvent) -> Void)?) {
+        self.eventCallback = callback
+    }
+
     /// Setzt einen Hook, der vor jedem Cloud-Versand auf System-Prompt und alle
     /// Nachrichteninhalte angewandt wird — z. B. zur PII-Redaktion. Lokale
     /// Aufrufe (In-Process/Ollama) bleiben unveraendert. `nil` entfernt den Hook.
@@ -495,6 +503,7 @@ public actor AIRouter {
                     throw error
                 }
                 DebugLog.write("[AIRouter] Local fehlgeschlagen fuer \(task.rawValue), Fallback zu Cloud: \(String(describing: error).prefix(80))")
+                emitEvent(.cloudFallback(task: task.rawValue))
                 result = try await runCloud(task: task, model: task.defaultModel, system: system, messages: messages, maxTokens: tokens, options: options, estimate: estimate)
             }
         } else if isLocalTag(model) {
@@ -508,6 +517,7 @@ public actor AIRouter {
                 guard case .budgetExhausted = error else { throw error }
                 if hasLocalBackend() {
                     DebugLog.write("[AIRouter] Budget erschoepft fuer \(task.rawValue), Fallback zu lokal")
+                    emitEvent(.localFallback(task: task.rawValue))
                     cacheStoreAllowed = false
                     result = try await callLocal(model: localModelTag, system: system, messages: messages, maxTokens: tokens, options: options, task: task).text
                 } else if queueOnBudgetExhausted {

@@ -1114,6 +1114,24 @@ final class AIRouterTests: XCTestCase {
         _ = try await second.value
     }
 
+    func testEventCallbackReportsThrottleAndLocalFallback() async throws {
+        let ollamaBody = try JSONSerialization.data(withJSONObject: [
+            "message": ["content": "lokal"], "prompt_eval_count": 1, "eval_count": 1
+        ])
+        let transport = MockTransport(responses: [.init(status: 200, body: ollamaBody)])
+        let router = makeRouter(transport: transport)
+        await router.configureLocalLLM(endpoint: "http://localhost:11434", model: "gemma3")
+        await router.setHourlyBudget(10_000)
+        let events = EventBox()
+        await router.setEventCallback { events.store($0) }
+
+        let hugeInput = String(repeating: "x", count: 60_000) // sprengt das Budget
+        let result = try await router.send(task: .factCheck, system: hugeInput, user: "u", maxTokens: 100)
+        XCTAssertEqual(result, "lokal")
+        XCTAssertEqual(events.all.first, .budgetThrottled(label: "factCheck"))
+        XCTAssertTrue(events.all.contains(.localFallback(task: "factCheck")))
+    }
+
     // MARK: - Auth-Kanten
 
     func testRepeated401FailsAfterSingleRefresh() async {
@@ -1280,6 +1298,21 @@ final class MemoryStorage: RouterStorage, @unchecked Sendable {
     var current: PersistedBudgetState? {
         lock.lock(); defer { lock.unlock() }
         return state
+    }
+}
+
+/// Thread-sicherer Sammler fuer Router-Events.
+final class EventBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [RouterEvent] = []
+
+    func store(_ event: RouterEvent) {
+        lock.lock(); events.append(event); lock.unlock()
+    }
+
+    var all: [RouterEvent] {
+        lock.lock(); defer { lock.unlock() }
+        return events
     }
 }
 

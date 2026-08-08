@@ -25,6 +25,10 @@ extension AIRouter {
 
     // MARK: - Telemetry helpers
 
+    func emitEvent(_ event: RouterEvent) {
+        eventCallback?(event)
+    }
+
     /// Wendet den Preflight-Hook (z. B. PII-Redaktion) auf ausgehende
     /// Cloud-Inhalte an — eine Stelle fuer alle Cloud-Pfade.
     func preflightedOutbound(system: String, messages: [AIMessage]) -> (system: String, messages: [AIMessage]) {

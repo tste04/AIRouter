@@ -8,6 +8,7 @@ extension AIRouter {
         if budgetClock.now - openedAt >= breakerCooldown {
             // Cooldown abgelaufen -> Breaker schliessen, Modell wieder zulassen.
             breakers[model] = nil
+            emitEvent(.breakerClosed(model: model))
             return false
         }
         return true
@@ -24,6 +25,7 @@ extension AIRouter {
         if state.consecutiveFailures >= breakerThreshold && state.openedAt == nil {
             state.openedAt = budgetClock.now
             DebugLog.write("[AIRouter] Circuit-Breaker offen fuer \(model) (\(state.consecutiveFailures) Fehler in Folge)")
+            emitEvent(.breakerOpened(model: model))
         }
         breakers[model] = state
     }

@@ -36,6 +36,7 @@ extension AIRouter {
             guard projectedCost <= costCeiling else {
                 throttledTasks += 1
                 DebugLog.write("[AIRouter] Kosten-Budget erreicht (\(projectedCost) > \(costCeiling) USD): \(label) aufgeschoben")
+                emitEvent(.budgetThrottled(label: label))
                 throw AIRouterError.budgetExhausted(task: label)
             }
         }
@@ -52,6 +53,7 @@ extension AIRouter {
         guard projected <= ceiling else {
             throttledTasks += 1
             DebugLog.write("[AIRouter] Budget-Throttle: \(label) aufgeschoben (projected: \(projected), ceiling: \(ceiling))")
+            emitEvent(.budgetThrottled(label: label))
             throw AIRouterError.budgetExhausted(task: label)
         }
         reservedTokens += estimatedTokens
