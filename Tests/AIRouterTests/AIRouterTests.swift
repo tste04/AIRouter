@@ -28,20 +28,27 @@ final class MockTransport: HTTPTransport, @unchecked Sendable {
         return requests.count
     }
 
-    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        lock.lock()
+    // Sperren nur in synchronen Helfern — NSLock ist in async-Kontexten tabu.
+    private func consumeResponse(for request: URLRequest) -> Response {
+        lock.lock(); defer { lock.unlock() }
         requests.append(request)
-        let response = responses.isEmpty ? Response(status: 500, body: Data()) : responses.removeFirst()
-        lock.unlock()
+        return responses.isEmpty ? Response(status: 500, body: Data()) : responses.removeFirst()
+    }
+
+    private func recordStreamRequest(_ request: URLRequest) -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        requests.append(request)
+        return streamLines
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let response = consumeResponse(for: request)
         let http = HTTPURLResponse(url: request.url!, statusCode: response.status, httpVersion: nil, headerFields: nil)!
         return (response.body, http)
     }
 
     func lines(for request: URLRequest) async throws -> (AsyncThrowingStream<String, Error>, HTTPURLResponse) {
-        lock.lock()
-        requests.append(request)
-        let lines = streamLines
-        lock.unlock()
+        let lines = recordStreamRequest(request)
         let http = HTTPURLResponse(url: request.url!, statusCode: streamStatus, httpVersion: nil, headerFields: nil)!
         let stream = AsyncThrowingStream<String, Error> { continuation in
             for line in lines { continuation.yield(line) }
@@ -1317,13 +1324,17 @@ final class MemoryStorage: RouterStorage, @unchecked Sendable {
         state = initial
     }
 
-    func loadBudgetState() async -> PersistedBudgetState? {
+    private func withLock<T>(_ body: () -> T) -> T {
         lock.lock(); defer { lock.unlock() }
-        return state
+        return body()
+    }
+
+    func loadBudgetState() async -> PersistedBudgetState? {
+        withLock { state }
     }
 
     func saveBudgetState(_ newState: PersistedBudgetState) async {
-        lock.lock(); state = newState; lock.unlock()
+        withLock { state = newState }
     }
 
     var current: PersistedBudgetState? {
@@ -1374,11 +1385,14 @@ final class GatedTransport: HTTPTransport, @unchecked Sendable {
         resumable.forEach { $0.resume() }
     }
 
-    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        lock.lock()
+    private func markStarted() -> Bool {
+        lock.lock(); defer { lock.unlock() }
         started += 1
-        let isOpen = gateOpen
-        lock.unlock()
+        return gateOpen
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let isOpen = markStarted()
         if !isOpen {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 lock.lock()
