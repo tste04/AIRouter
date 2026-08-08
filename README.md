@@ -92,6 +92,7 @@ Nutzung frei; kommerzielle Nutzung erfordert eine Lizenz (siehe
 | Budget-Status | `budgetStatus()` — Verbrauch, Reservierungen, USD-Kosten, Grenzen, `secondsUntilReset` (monotone Uhr). |
 | Health-Status | `healthStatus()` — offene Breaker, aktive/wartende Cloud-Calls, Cache-Größe, Provider, lokales Backend. |
 | Modell-Statistik | `modelStats()` — Aufrufe, Fehler, Ø-Latenz pro Modell. |
+| Event-Hook | `setEventCallback(_:)` — Fallbacks, Budget-Drosselung, Breaker-Wechsel und Retries als typisierte `RouterEvent`-Werte für Metriken/Alarme. |
 | Zustands-Getter | `currentEnergyMode`, `isAirplaneMode`, `localModelName`, `isLocalModelReady()`. |
 | Logging | `DebugLog` über `os.Logger` (`privacy: .private`), optional Datei-Log (`0600`). |
 
@@ -363,6 +364,18 @@ await router.setMaxConcurrentCloudCalls(4)
 for stat in await router.modelStats() {
     print("\(stat.model): \(stat.calls) Aufrufe, \(stat.failures) Fehler, Ø \(stat.averageLatencyMs) ms")
 }
+
+// Routing-Ereignisse maschinenlesbar (Metriken, Alarme)
+await router.setEventCallback { event in
+    if case .breakerOpened(let model) = event {
+        metrics.increment("airouter.breaker.opened", tags: [model])
+    }
+}
+
+// Betriebszustand abfragen; letzten Budget-Snapshot vor Terminierung sichern
+let health = await router.healthStatus()
+print("Offene Breaker: \(health.openBreakers), aktiv: \(health.activeCloudCalls)")
+await router.flushPersistence()
 
 // Deadline & strukturierte Ausgabe pro Aufruf
 let json = try await router.send(
