@@ -1132,6 +1132,24 @@ final class AIRouterTests: XCTestCase {
         XCTAssertTrue(events.all.contains(.localFallback(task: "factCheck")))
     }
 
+    func testStreamingFallsBackToLocalWhenBudgetExhausted() async throws {
+        let lines = [
+            "{\"message\":{\"content\":\"lokal\"}}",
+            "{\"done\":true,\"prompt_eval_count\":1,\"eval_count\":1}"
+        ]
+        let transport = MockTransport(responses: [], streamLines: lines)
+        let router = makeRouter(transport: transport)
+        await router.configureLocalLLM(endpoint: "http://localhost:11434", model: "gemma3")
+        await router.setHourlyBudget(10_000)
+        let hugeInput = String(repeating: "x", count: 60_000) // sprengt das Budget
+        var chunks: [String] = []
+        for try await chunk in await router.sendStreaming(task: .factCheck, system: hugeInput, user: "u") {
+            chunks.append(chunk)
+        }
+        XCTAssertEqual(chunks.joined(), "lokal")
+        XCTAssertEqual(transport.requestCount, 1, "Nur der lokale Stream-Request darf rausgehen")
+    }
+
     // MARK: - Auth-Kanten
 
     func testRepeated401FailsAfterSingleRefresh() async {
