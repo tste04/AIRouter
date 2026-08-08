@@ -1193,6 +1193,19 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(transport.requestCount, 0)
     }
 
+    func testOllamaServiceCachesWithinTTL() async throws {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "models": [["name": "gemma3:latest", "size": 1_000, "details": ["parameter_size": "4B"]]]
+        ])
+        // Nur EINE Antwort im Mock: der zweite Abruf muss aus dem Cache kommen.
+        let transport = MockTransport(responses: [.init(status: 200, body: body)])
+        let service = OllamaService(transport: transport)
+        let first = await service.fetchModels(endpoint: "http://localhost:11434")
+        let second = await service.fetchModels(endpoint: "http://localhost:11434")
+        XCTAssertEqual(first.map(\.name), second.map(\.name))
+        XCTAssertEqual(transport.requestCount, 1, "Innerhalb der TTL kein zweiter Request")
+    }
+
     func testOllamaServiceReturnsEmptyOnInvalidEndpointOrError() async {
         let transport = MockTransport(responses: [.init(status: 500, body: Data())])
         let service = OllamaService(transport: transport)
