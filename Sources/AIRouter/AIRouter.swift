@@ -450,6 +450,14 @@ public actor AIRouter {
         }.sorted { $0.model < $1.model }
     }
 
+    /// Setzt die Modell-Statistik (Aufrufe, Fehler, Latenzen) zurueck —
+    /// z. B. beim Umschalten eines Dashboards auf ein neues Messfenster.
+    public func resetModelStats() {
+        statsCalls.removeAll()
+        statsFailures.removeAll()
+        statsLatencyTotalMs.removeAll()
+    }
+
     public func warmup() async {
         _ = try? await getAccessToken()
     }

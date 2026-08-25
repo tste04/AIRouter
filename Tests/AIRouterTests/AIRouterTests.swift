@@ -1224,6 +1224,17 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(transport.requestCount, 1)
     }
 
+    func testResetModelStatsClearsCounters() async throws {
+        let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "ok"))])
+        let router = makeRouter(transport: transport)
+        _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        var stats = await router.modelStats()
+        XCTAssertFalse(stats.isEmpty)
+        await router.resetModelStats()
+        stats = await router.modelStats()
+        XCTAssertTrue(stats.isEmpty)
+    }
+
     // MARK: - Auth-Kanten
 
     func testRepeated401FailsAfterSingleRefresh() async {
