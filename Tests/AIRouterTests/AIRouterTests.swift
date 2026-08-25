@@ -1194,6 +1194,24 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(health.openBreakers, ["gemini-2.5-flash"], "Offener Breaker muss im Health-Status stehen")
     }
 
+    func testEventCallbackReportsRetriesAndBreakerOpening() async {
+        // 3 Aufrufe mit je einem Retry (6x 503): jeder Aufruf meldet einen
+        // Retry, der dritte Fehlschlag oeffnet den Breaker.
+        let transport = MockTransport(responses: [
+            .init(status: 503, body: Data()), .init(status: 503, body: Data()),
+            .init(status: 503, body: Data()), .init(status: 503, body: Data()),
+            .init(status: 503, body: Data()), .init(status: 503, body: Data())
+        ])
+        let router = makeRouter(transport: transport, retryPolicy: RetryPolicy(maxTransientRetries: 1, baseDelay: 0))
+        let events = EventBox()
+        await router.setEventCallback { events.store($0) }
+        for _ in 0..<3 {
+            _ = try? await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        }
+        XCTAssertTrue(events.all.contains(.retrying(model: "gemini-2.5-flash", attempt: 1)))
+        XCTAssertTrue(events.all.contains(.breakerOpened(model: "gemini-2.5-flash")))
+    }
+
     // MARK: - Auth-Kanten
 
     func testRepeated401FailsAfterSingleRefresh() async {
