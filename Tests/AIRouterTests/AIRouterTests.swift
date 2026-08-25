@@ -1157,6 +1157,23 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(transport.requestCount, 1, "Nur der lokale Stream-Request darf rausgehen")
     }
 
+    func testResponseCacheEvictsOldestBeyondMaxEntries() async throws {
+        let transport = MockTransport(responses: [
+            .init(status: 200, body: googleBody(text: "a")),
+            .init(status: 200, body: googleBody(text: "b")),
+            .init(status: 200, body: googleBody(text: "a2"))
+        ])
+        let router = makeRouter(transport: transport)
+        await router.enableResponseCache(tasks: [.factCheck], ttlSeconds: 60, maxEntries: 1)
+        _ = try await router.send(task: .factCheck, system: "eins", user: "u", maxTokens: 100)
+        _ = try await router.send(task: .factCheck, system: "zwei", user: "u", maxTokens: 100) // verdraengt "eins"
+        let reloaded = try await router.send(task: .factCheck, system: "eins", user: "u", maxTokens: 100)
+        XCTAssertEqual(reloaded, "a2", "Verdraengter Eintrag muss neu geladen werden")
+        XCTAssertEqual(transport.requestCount, 3)
+        let health = await router.healthStatus()
+        XCTAssertEqual(health.responseCacheEntries, 1, "maxEntries begrenzt den Cache")
+    }
+
     // MARK: - Auth-Kanten
 
     func testRepeated401FailsAfterSingleRefresh() async {
