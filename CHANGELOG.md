@@ -46,6 +46,12 @@ Release getaggt ist. Bis dahin sammelt `Unreleased` den Stand von `main`.
   Cloud-Aufrufe, Latenz-/Fehler-Statistik (`modelStats()`).
 - Kosten-Telemetrie aus Katalog-Preisen (`AIUsageInfo.costUSD`,
   `BudgetStatus.costUSD`) und PII-Preflight-Hook (`setCloudPreflight`).
+- Event-Hook `setEventCallback(_:)`: Fallbacks, Budget-Drosselung,
+  Breaker-Zustandswechsel, Retries und Cache-Treffer als typisierte
+  `RouterEvent`-Werte.
+- `resetModelStats()`; `localEndpoint`-Property (ersetzt das deprecatede
+  `localLLMEndpointValue()`).
+- DocC-Katalog mit Artikeln zu Routing sowie Budgets und Kosten.
 
 ### Sicherheit
 - Allowlist-Validierung für Region/Projekt/Modellnamen und lokale Endpoints;
@@ -56,5 +62,6 @@ Release getaggt ist. Bis dahin sammelt `Unreleased` den Stand von `main`.
 
 ### Infrastruktur
 - CI (GitHub Actions): macOS-Build + Tests (komplett mock-basiert, ohne Netz)
-  und iOS-Build bei jedem Push und PR.
+  und iOS-Build bei jedem Push und PR; Compiler-Warnungen brechen den Build
+  (-warnings-as-errors).
 - Swift 5.7+ (Xcode 14.1+), macOS 13+ / iOS 16+, keine externen Dependencies.
