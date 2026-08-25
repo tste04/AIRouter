@@ -1,5 +1,7 @@
 # AIRouter
 
+[![CI](https://github.com/tste04/AIRouter/actions/workflows/ci.yml/badge.svg)](https://github.com/tste04/AIRouter/actions/workflows/ci.yml)
+
 Ein eigenständiges Swift-Package mit einem zentralen Router, der KI-Aufgaben
 anhand von **Energiemodus**, **Routing-Policy** und **Token-/Kosten-Budget** auf
 Cloud-Modelle (Vertex AI: Anthropic & Google — sowie beliebige weitere Backends
