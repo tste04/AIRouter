@@ -477,6 +477,7 @@ public actor AIRouter {
         let cacheKey = responseCacheKey(task: task, model: model, system: system, messages: messages, maxTokens: tokens, options: options)
         if let key = cacheKey, let hit = cachedResponse(for: key) {
             DebugLog.write("[AIRouter] Cache-Treffer fuer \(task.rawValue)")
+            emitEvent(.cacheHit(task: task.rawValue))
             return hit
         }
 

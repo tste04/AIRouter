@@ -16,4 +16,6 @@ public enum RouterEvent: Sendable, Equatable {
     case breakerClosed(model: String)
     /// Transienter Fehler, Wiederholungsversuch folgt.
     case retrying(model: String, attempt: Int)
+    /// Antwort aus dem Cache bedient — kein Backend-Aufruf.
+    case cacheHit(task: String)
 }

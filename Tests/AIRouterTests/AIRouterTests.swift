@@ -1212,6 +1212,18 @@ final class AIRouterTests: XCTestCase {
         XCTAssertTrue(events.all.contains(.breakerOpened(model: "gemini-2.5-flash")))
     }
 
+    func testEventCallbackReportsCacheHits() async throws {
+        let transport = MockTransport(responses: [.init(status: 200, body: googleBody(text: "einmalig"))])
+        let router = makeRouter(transport: transport)
+        await router.enableResponseCache(tasks: [.factCheck])
+        let events = EventBox()
+        await router.setEventCallback { events.store($0) }
+        _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        XCTAssertEqual(events.all, [.cacheHit(task: "factCheck")])
+        XCTAssertEqual(transport.requestCount, 1)
+    }
+
     // MARK: - Auth-Kanten
 
     func testRepeated401FailsAfterSingleRefresh() async {
