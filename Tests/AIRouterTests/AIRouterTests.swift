@@ -1174,6 +1174,26 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(health.responseCacheEntries, 1, "maxEntries begrenzt den Cache")
     }
 
+    func testHealthStatusReflectsBreakerAndConfig() async {
+        let transport = MockTransport(responses: [
+            .init(status: 503, body: Data()),
+            .init(status: 503, body: Data()),
+            .init(status: 503, body: Data())
+        ])
+        let router = makeRouter(transport: transport, retryPolicy: RetryPolicy(maxTransientRetries: 0, baseDelay: 0))
+        var health = await router.healthStatus()
+        XCTAssertTrue(health.openBreakers.isEmpty)
+        XCTAssertEqual(health.activeCloudCalls, 0)
+        XCTAssertEqual(health.maxConcurrentCloudCalls, 8)
+        XCTAssertFalse(health.localBackendConfigured)
+
+        for _ in 0..<3 {
+            _ = try? await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        }
+        health = await router.healthStatus()
+        XCTAssertEqual(health.openBreakers, ["gemini-2.5-flash"], "Offener Breaker muss im Health-Status stehen")
+    }
+
     // MARK: - Auth-Kanten
 
     func testRepeated401FailsAfterSingleRefresh() async {
