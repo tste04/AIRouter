@@ -708,6 +708,34 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(transport.requestCount, 2)
     }
 
+    func testQueuedCallStaysOfflineWhenAirplaneModeTurnsOnDuringWait() async throws {
+        let transport = MockTransport(responses: [
+            .init(status: 200, body: googleBody(text: "big", input: 4_000, output: 4_000))
+        ])
+        let router = makeRouter(transport: transport)
+        await router.setHourlyBudget(10_000)
+        await router.overrideBudgetWindowForTesting(seconds: 1)
+        await router.setQueueOnBudgetExhausted(true)
+        _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100) // verbraucht 8000
+
+        // Zweiter Aufruf parkt in der Warteschlange; waehrenddessen geht der
+        // Flugmodus an. Nach dem Aufwachen darf der Prompt nicht in die Cloud.
+        let queued = Task {
+            try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        await router.setAirplaneMode(true)
+        do {
+            _ = try await queued.value
+            XCTFail("Geparkter Aufruf ging trotz Flugmodus in die Cloud")
+        } catch let error as AIRouterError {
+            guard case .budgetExhausted = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        XCTAssertEqual(transport.requestCount, 1, "kein zweiter Netzaufruf im Flugmodus")
+    }
+
     func testConcurrencyLimitSerializesCloudCalls() async throws {
         let transport = GatedTransport(body: googleBody(text: "ok"))
         let router = makeRouter(transport: transport)

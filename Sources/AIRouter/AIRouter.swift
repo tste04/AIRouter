@@ -533,6 +533,13 @@ public actor AIRouter {
                     let wait = secondsUntilBudgetReset()
                     DebugLog.write("[AIRouter] Budget erschoepft fuer \(task.rawValue), warte \(Int(wait))s auf das naechste Fenster")
                     try await Task.sleep(for: .seconds(wait))
+                    // Die Offline-Zusage gilt auch fuer geparkte Aufrufe: wurde
+                    // der Flugmodus waehrend der Wartezeit eingeschaltet, darf
+                    // der Prompt nach dem Aufwachen nicht mehr in die Cloud.
+                    guard !airplaneMode else {
+                        DebugLog.write("[AIRouter] Flugmodus waehrend der Budget-Wartezeit aktiviert — \(task.rawValue) bleibt offline")
+                        throw error
+                    }
                     result = try await runCloud(task: task, model: model, system: system, messages: messages, maxTokens: tokens, options: options, estimate: estimate)
                 } else {
                     throw error
@@ -641,6 +648,12 @@ public actor AIRouter {
                             let wait = self.secondsUntilBudgetReset()
                             DebugLog.write("[AIRouter] Budget erschoepft fuer \(task.rawValue), Streaming wartet \(Int(wait))s")
                             try await Task.sleep(for: .seconds(wait))
+                            // Offline-Zusage: kein Cloud-Stream, wenn der
+                            // Flugmodus waehrend der Wartezeit aktiv wurde.
+                            guard !self.airplaneMode else {
+                                DebugLog.write("[AIRouter] Flugmodus waehrend der Budget-Wartezeit aktiviert — \(task.rawValue) bleibt offline")
+                                throw error
+                            }
                             try await self.streamCloud(task: task, model: model, system: system, messages: messages, maxTokens: tokens, options: options, continuation: continuation)
                             continuation.finish()
                         } catch {
