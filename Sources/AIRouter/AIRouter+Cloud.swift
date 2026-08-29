@@ -28,6 +28,16 @@ extension AIRouter {
             estimatedCostUSD: estimatedRequestCostUSD(model: model, estimate: estimate, maxTokens: maxTokens))
     }
 
+    /// Token-Zahl fuers Settle: meldet das Backend trotz nicht-leerer Antwort
+    /// keine Usage (0/0), wird grob aus den Zeichenzahlen geschaetzt — ein
+    /// Backend, das Usage verschweigt, darf das Budget nicht wirkungslos machen.
+    func settleTokens(for result: CallResult, system: String, messages: [AIMessage]) -> Int {
+        let reported = result.inputTokens + result.outputTokens
+        if reported > 0 || result.text.isEmpty { return reported }
+        let inputChars = system.count + messages.reduce(0) { $0 + $1.content.count }
+        return (inputChars + result.text.count) / 4
+    }
+
     func runCloud(task: AITask, model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, estimate: Int) async throws -> String {
         try checkContextWindow(model: model, estimate: estimate)
         let reservation = try reserveBudget(
@@ -43,7 +53,7 @@ extension AIRouter {
         do {
             let result = try await callVertex(model: model, system: system, messages: messages, maxTokens: maxTokens, options: options, task: task)
             releaseCloudSlot()
-            settleBudget(reservation, actualTokens: result.inputTokens + result.outputTokens)
+            settleBudget(reservation, actualTokens: settleTokens(for: result, system: system, messages: messages))
             return result.text
         } catch {
             releaseCloudSlot()

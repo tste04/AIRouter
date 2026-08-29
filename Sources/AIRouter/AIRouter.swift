@@ -586,7 +586,7 @@ public actor AIRouter {
         do {
             let result = try await callVertex(model: effectiveModel, system: system, messages: messages, maxTokens: maxTokens, options: options, task: nil)
             releaseCloudSlot()
-            settleBudget(reservation, actualTokens: result.inputTokens + result.outputTokens)
+            settleBudget(reservation, actualTokens: settleTokens(for: result, system: system, messages: messages))
             return result.text
         } catch {
             releaseCloudSlot()

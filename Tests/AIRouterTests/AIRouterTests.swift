@@ -736,6 +736,16 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(transport.requestCount, 1, "kein zweiter Netzaufruf im Flugmodus")
     }
 
+    func testBudgetSettleEstimatesWhenBackendReportsZeroUsage() async throws {
+        let transport = MockTransport(responses: [
+            .init(status: 200, body: googleBody(text: String(repeating: "x", count: 400), input: 0, output: 0))
+        ])
+        let router = makeRouter(transport: transport)
+        _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
+        let status = await router.budgetStatus()
+        XCTAssertGreaterThan(status.tokensUsed, 0, "verschwiegene Usage wird geschaetzt statt mit 0 verbucht")
+    }
+
     func testNegativeMaxTokensCannotBypassBudget() async throws {
         let transport = MockTransport(responses: [
             .init(status: 200, body: googleBody(text: "big", input: 5_000, output: 5_000))
