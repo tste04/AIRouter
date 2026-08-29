@@ -422,13 +422,17 @@ public actor AIRouter {
     }
 
     /// Konfiguriert Persistenz fuer den Budget-Zustand. Ist der gespeicherte
-    /// Stundenanfang juenger als eine Stunde, werden Zaehler und Kosten
+    /// Fensteranfang juenger als das Budget-Fenster, werden Zaehler und Kosten
     /// wiederhergestellt — das Budget laesst sich nicht per Neustart umgehen.
     public func configureStorage(_ storage: RouterStorage) async {
         self.storage = storage
         if let state = await storage.loadBudgetState() {
             let elapsed = Date().timeIntervalSince(state.hourStarted)
-            if elapsed >= 0 && elapsed < 3600 {
+            // Gegen das konfigurierte Fenster pruefen, nicht gegen fixe 3600 s —
+            // bei laengerem Fenster (setBudgetWindow) ist ein 90-Minuten-Snapshot
+            // noch gueltig und darf nicht verworfen werden.
+            let window = TimeInterval(budgetWindow.components.seconds)
+            if elapsed >= 0 && elapsed < window {
                 tokensUsedThisHour = state.tokensUsed
                 costThisHourUSD = state.costUSD
                 throttledTasks = state.throttled

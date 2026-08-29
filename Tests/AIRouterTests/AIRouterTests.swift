@@ -672,6 +672,31 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(status.throttledCount, 2)
     }
 
+    func testConfigureStorageIgnoresStaleAndFutureSnapshots() async throws {
+        // Aelter als das Budget-Fenster -> verwerfen.
+        let stale = PersistedBudgetState(tokensUsed: 5_000, costUSD: 1, throttled: 2, hourStarted: Date().addingTimeInterval(-7_200))
+        let router = AIRouter(vertexRegion: "us-central1", vertexProject: "demo")
+        await router.configureStorage(MemoryStorage(initial: stale))
+        var status = await router.budgetStatus()
+        XCTAssertEqual(status.tokensUsed, 0, "abgelaufener Snapshot wird verworfen")
+
+        // Zukuenftiger Fensteranfang (verstellte Wanduhr) -> ebenfalls verwerfen.
+        let future = PersistedBudgetState(tokensUsed: 5_000, costUSD: 1, throttled: 2, hourStarted: Date().addingTimeInterval(600))
+        await router.configureStorage(MemoryStorage(initial: future))
+        status = await router.budgetStatus()
+        XCTAssertEqual(status.tokensUsed, 0)
+    }
+
+    func testConfigureStorageRespectsLongerBudgetWindow() async throws {
+        // 90 Minuten alter Snapshot bei 2-Stunden-Fenster: noch gueltig.
+        let state = PersistedBudgetState(tokensUsed: 4_321, costUSD: 0.25, throttled: 1, hourStarted: Date().addingTimeInterval(-5_400))
+        let router = AIRouter(vertexRegion: "us-central1", vertexProject: "demo")
+        await router.setBudgetWindow(seconds: 7_200)
+        await router.configureStorage(MemoryStorage(initial: state))
+        let status = await router.budgetStatus()
+        XCTAssertEqual(status.tokensUsed, 4_321, "Snapshot innerhalb des konfigurierten Fensters wird uebernommen")
+    }
+
     func testBudgetEstimateIncludesInput() async {
         // Grosser Input muss in die Reservierung einfliessen, auch wenn
         // maxTokens klein ist (~40k Zeichen ≈ 10k Tokens > 7.5k-Ceiling).
