@@ -202,6 +202,8 @@ public actor AIRouter {
     var responseCacheOrder: [ResponseCacheKey] = []
     var responseCacheTTL: Duration = .seconds(300)
     var responseCacheMax: Int = 0
+    var responseCacheBytes = 0
+    var responseCacheMaxBytes = 8_000_000
     var cacheableTasks: Set<AITask> = []
 
     /// - Parameters:
@@ -351,20 +353,23 @@ public actor AIRouter {
     /// Aktiviert den Antwort-Cache fuer die angegebenen Tasks (opt-in; gedacht
     /// fuer idempotente Klassifikations-/Extraktions-Tasks). Der Schluessel ist
     /// die vollstaendige Anfrage (Task, Modell, System, Nachrichten, Limits,
-    /// Optionen). `maxEntries: 0` deaktiviert den Cache.
-    public func enableResponseCache(tasks: Set<AITask>, ttlSeconds: TimeInterval = 300, maxEntries: Int = 256) {
+    /// Optionen). Neben `maxEntries` gilt ein Byte-Deckel ueber alle Eintraege
+    /// (`maxBytes`) — grosse Antworten koennen den Speicher sonst auch bei
+    /// wenigen Eintraegen dominieren. `maxEntries: 0` deaktiviert den Cache.
+    public func enableResponseCache(tasks: Set<AITask>, ttlSeconds: TimeInterval = 300, maxEntries: Int = 256, maxBytes: Int = 8_000_000) {
         responseCacheMax = max(0, maxEntries)
+        responseCacheMaxBytes = max(1024, maxBytes)
         responseCacheTTL = .seconds(max(0.001, ttlSeconds))
         cacheableTasks = responseCacheMax > 0 ? tasks : []
         if responseCacheMax == 0 {
-            responseCache.removeAll()
-            responseCacheOrder.removeAll()
+            clearResponseCache()
         }
     }
 
     public func clearResponseCache() {
         responseCache.removeAll()
         responseCacheOrder.removeAll()
+        responseCacheBytes = 0
     }
 
     /// Registriert einen ``CloudInferenceProvider``. Modelle, deren

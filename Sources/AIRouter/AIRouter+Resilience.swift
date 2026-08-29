@@ -41,8 +41,7 @@ extension AIRouter {
     func cachedResponse(for key: ResponseCacheKey) -> String? {
         guard let entry = responseCache[key] else { return nil }
         guard budgetClock.now - entry.storedAt < responseCacheTTL else {
-            responseCache[key] = nil
-            responseCacheOrder.removeAll { $0 == key }
+            removeCacheEntry(key)
             return nil
         }
         return entry.text
@@ -50,13 +49,29 @@ extension AIRouter {
 
     func storeResponse(_ text: String, for key: ResponseCacheKey) {
         guard responseCacheMax > 0 else { return }
-        if responseCache[key] == nil {
+        let bytes = text.utf8.count
+        // Eine Antwort oberhalb des gesamten Byte-Budgets wird nicht gecacht —
+        // sie wuerde nur alle anderen Eintraege verdraengen.
+        guard bytes <= responseCacheMaxBytes else { return }
+        if let existing = responseCache[key] {
+            responseCacheBytes -= existing.text.utf8.count
+        } else {
             responseCacheOrder.append(key)
         }
         responseCache[key] = ResponseCacheEntry(text: text, storedAt: budgetClock.now)
-        while responseCacheOrder.count > responseCacheMax {
-            let oldest = responseCacheOrder.removeFirst()
-            responseCache[oldest] = nil
+        responseCacheBytes += bytes
+        // Eviction ueber Eintrags- UND Byte-Deckel: 256 Eintraege zu je 50 MB
+        // waeren sonst ein gueltiger Cache-Zustand.
+        while responseCacheOrder.count > responseCacheMax || responseCacheBytes > responseCacheMaxBytes,
+              let oldest = responseCacheOrder.first {
+            removeCacheEntry(oldest)
         }
+    }
+
+    func removeCacheEntry(_ key: ResponseCacheKey) {
+        if let entry = responseCache.removeValue(forKey: key) {
+            responseCacheBytes -= entry.text.utf8.count
+        }
+        responseCacheOrder.removeAll { $0 == key }
     }
 }

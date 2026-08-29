@@ -736,6 +736,29 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(transport.requestCount, 1, "kein zweiter Netzaufruf im Flugmodus")
     }
 
+    func testResponseCacheEvictsOnByteBudget() async throws {
+        let bigA = String(repeating: "a", count: 700)
+        let bigB = String(repeating: "b", count: 700)
+        let transport = MockTransport(responses: [
+            .init(status: 200, body: googleBody(text: bigA)),
+            .init(status: 200, body: googleBody(text: bigB)),
+            .init(status: 200, body: googleBody(text: bigA))
+        ])
+        let router = makeRouter(transport: transport)
+        await router.enableResponseCache(tasks: [.factCheck], maxEntries: 10, maxBytes: 1024)
+
+        _ = try await router.send(task: .factCheck, system: "s", user: "frage-a")
+        // Zweiter Eintrag reisst den 1024-Byte-Deckel -> aeltester fliegt raus,
+        // obwohl maxEntries noch lange nicht erreicht ist.
+        _ = try await router.send(task: .factCheck, system: "s", user: "frage-b")
+        let cachedB = try await router.send(task: .factCheck, system: "s", user: "frage-b")
+        XCTAssertEqual(cachedB, bigB)
+        XCTAssertEqual(transport.requestCount, 2, "frage-b kommt aus dem Cache")
+
+        _ = try await router.send(task: .factCheck, system: "s", user: "frage-a")
+        XCTAssertEqual(transport.requestCount, 3, "frage-a wurde ueber den Byte-Deckel verdraengt")
+    }
+
     func testBudgetSettleEstimatesWhenBackendReportsZeroUsage() async throws {
         let transport = MockTransport(responses: [
             .init(status: 200, body: googleBody(text: String(repeating: "x", count: 400), input: 0, output: 0))
