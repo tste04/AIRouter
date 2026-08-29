@@ -1373,6 +1373,25 @@ final class AIRouterTests: XCTestCase {
         }
         XCTAssertNil(forwarded, "Redirects werden verweigert — Auth-Header duerfen keinem Hostwechsel folgen")
     }
+
+    func testByteLineBufferCountsEveryByteAndSplitsLines() {
+        var buffer = ByteLineBuffer()
+        var lines: [String] = []
+        for byte in Array("a\r\nbb\n".utf8) {
+            if let line = buffer.append(byte) { lines.append(line) }
+        }
+        XCTAssertEqual(lines, ["a", "bb"])
+        XCTAssertEqual(buffer.totalBytes, 6)
+
+        // Bytes ohne abschliessenden Zeilenumbruch zaehlen trotzdem aufs
+        // Limit — genau der Pfad, den ein newline-freier Body ausnutzen wuerde.
+        for byte in Array("rest".utf8) {
+            XCTAssertNil(buffer.append(byte))
+        }
+        XCTAssertEqual(buffer.totalBytes, 10)
+        XCTAssertEqual(buffer.flush(), "rest")
+        XCTAssertNil(buffer.flush())
+    }
 }
 
 // MARK: - Test-Provider & -Storage

@@ -31,6 +31,37 @@ final class RedirectRefusingDelegate: NSObject, URLSessionTaskDelegate, @uncheck
     }
 }
 
+/// Zeilen-Puffer fuer den Streaming-Transport: zerlegt rohe Bytes an `\n`
+/// (ein `\r` davor wird entfernt) und zaehlt JEDES empfangene Byte gegen das
+/// Limit — auch Bytes, die nie eine Zeile abschliessen. `bytes.lines` wuerde
+/// einen zeilenumbruchfreien Body unbegrenzt puffern, bevor das Limit greift.
+struct ByteLineBuffer {
+    private var buffer: [UInt8] = []
+    private(set) var totalBytes = 0
+
+    /// Nimmt ein Byte auf; liefert die Zeile, die dieses Byte abschliesst.
+    mutating func append(_ byte: UInt8) -> String? {
+        totalBytes += 1
+        guard byte == 0x0A else {
+            buffer.append(byte)
+            return nil
+        }
+        return takeLine()
+    }
+
+    /// Restinhalt nach Stream-Ende (letzte Zeile ohne Zeilenumbruch).
+    mutating func flush() -> String? {
+        buffer.isEmpty ? nil : takeLine()
+    }
+
+    private mutating func takeLine() -> String {
+        var line = buffer
+        buffer.removeAll(keepingCapacity: true)
+        if line.last == 0x0D { line.removeLast() }
+        return String(decoding: line, as: UTF8.self)
+    }
+}
+
 /// `URLSession`-basierte Standard-Implementierung von ``HTTPTransport``.
 public struct URLSessionTransport: HTTPTransport {
     private let session: URLSession
@@ -68,19 +99,25 @@ public struct URLSessionTransport: HTTPTransport {
             throw AIRouterError.noResponse
         }
         // Groessenlimit gilt auch fuer Streams — ein endloser SSE-Strom darf
-        // den Prozess nicht ueber den Speicher druecken.
+        // den Prozess nicht ueber den Speicher druecken. Byte-genau statt via
+        // `bytes.lines`: dessen interner Puffer waechst bei einem Body ohne
+        // Zeilenumbrueche unbegrenzt, bevor je eine Zeile beim Limit ankommt.
         let limit = maxResponseBytes
         let stream = AsyncThrowingStream<String, Error> { continuation in
             let task = Task {
-                var totalBytes = 0
+                var lineBuffer = ByteLineBuffer()
                 do {
-                    for try await line in bytes.lines {
-                        totalBytes += line.utf8.count + 1
-                        guard totalBytes <= limit else {
+                    for try await byte in bytes {
+                        if let line = lineBuffer.append(byte) {
+                            continuation.yield(line)
+                        }
+                        guard lineBuffer.totalBytes <= limit else {
                             continuation.finish(throwing: AIRouterError.responseTooLarge(limitBytes: limit))
                             return
                         }
-                        continuation.yield(line)
+                    }
+                    if let last = lineBuffer.flush() {
+                        continuation.yield(last)
                     }
                     continuation.finish()
                 } catch {
