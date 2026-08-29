@@ -566,6 +566,10 @@ public actor AIRouter {
         maxTokens: Int,
         options: GenerationOptions = .default
     ) async throws -> String {
+        // Clamp wie beim Task-Pfad: negative maxTokens duerfen weder die
+        // Budget-Schaetzung ins Negative ziehen noch als "unbegrenzt" beim
+        // Backend ankommen.
+        let maxTokens = max(1, maxTokens)
         let effectiveModel = airplaneMode ? localModelTag : model
         if isLocalTag(effectiveModel) {
             return try await callLocal(model: effectiveModel, system: system, messages: messages, maxTokens: maxTokens, options: options, task: nil).text
@@ -675,6 +679,7 @@ public actor AIRouter {
     public func sendStreaming(model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions = .default) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let worker = Task {
+                let maxTokens = max(1, maxTokens) // Clamp wie beim send-Pendant.
                 let effectiveModel = self.airplaneMode ? self.localModelTag : model
                 if self.isLocalTag(effectiveModel) {
                     do {

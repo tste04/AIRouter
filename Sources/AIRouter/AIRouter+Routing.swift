@@ -4,7 +4,10 @@ extension AIRouter {
     // MARK: - Model resolution
 
     func effectiveMaxTokens(task: AITask, requested: Int?) -> Int {
-        let base = requested ?? task.defaultMaxTokens
+        // Clamp auf >= 1: ein negativer Wert wuerde die Budget-Schaetzung
+        // negativ machen (Ceiling-Bypass, aufgeblaehte Reservierungen) und
+        // stuende bei Ollama fuer "unbegrenzt generieren" (num_predict: -1).
+        let base = max(1, requested ?? task.defaultMaxTokens)
         guard energyMode == .maxCloud else { return base }
         // Nie unter das Basis-Limit runden (kleine Limits wuerden sonst auf 0 fallen).
         return max(base, Int((Double(base) * 1.5 / 100).rounded() * 100))

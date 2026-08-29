@@ -736,6 +736,27 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(transport.requestCount, 1, "kein zweiter Netzaufruf im Flugmodus")
     }
 
+    func testNegativeMaxTokensCannotBypassBudget() async throws {
+        let transport = MockTransport(responses: [
+            .init(status: 200, body: googleBody(text: "big", input: 5_000, output: 5_000))
+        ])
+        let router = makeRouter(transport: transport)
+        await router.setHourlyBudget(10_000)
+        _ = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100) // verbraucht 10000
+
+        // Ohne Clamp wuerde ein stark negativer Wert die Schaetzung negativ
+        // machen und die Reservierung am Ceiling vorbeischieben.
+        do {
+            _ = try await router.send(model: "gemini-2.5-flash", system: "s", messages: [.user("u")], maxTokens: -100_000)
+            XCTFail("Negativer maxTokens-Wert hebelte das erschoepfte Budget aus")
+        } catch let error as AIRouterError {
+            guard case .budgetExhausted = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        XCTAssertEqual(transport.requestCount, 1)
+    }
+
     func testConcurrencyLimitSerializesCloudCalls() async throws {
         let transport = GatedTransport(body: googleBody(text: "ok"))
         let router = makeRouter(transport: transport)
