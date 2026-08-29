@@ -11,6 +11,26 @@ public protocol HTTPTransport: Sendable {
     func lines(for request: URLRequest) async throws -> (AsyncThrowingStream<String, Error>, HTTPURLResponse)
 }
 
+/// Verweigert HTTP-Redirects. `URLSession` haengt die Original-Header sonst
+/// auch an das Redirect-Ziel an — inklusive `Authorization` bzw. `x-api-key`,
+/// und auch bei einem Hostwechsel. Ein kompromittiertes Backend koennte
+/// Credentials so per `302 Location:` abgreifen. Keiner der angebundenen
+/// API-Pfade braucht Redirects; die 3xx-Antwort wird stattdessen wie jeder
+/// andere Nicht-2xx-Status an den Aufrufer durchgereicht.
+final class RedirectRefusingDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    static let shared = RedirectRefusingDelegate()
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+}
+
 /// `URLSession`-basierte Standard-Implementierung von ``HTTPTransport``.
 public struct URLSessionTransport: HTTPTransport {
     private let session: URLSession
@@ -25,7 +45,7 @@ public struct URLSessionTransport: HTTPTransport {
     }
 
     public func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        let (bytes, response) = try await session.bytes(for: request)
+        let (bytes, response) = try await session.bytes(for: request, delegate: RedirectRefusingDelegate.shared)
         guard let http = response as? HTTPURLResponse else {
             throw AIRouterError.noResponse
         }
@@ -43,7 +63,7 @@ public struct URLSessionTransport: HTTPTransport {
     }
 
     public func lines(for request: URLRequest) async throws -> (AsyncThrowingStream<String, Error>, HTTPURLResponse) {
-        let (bytes, response) = try await session.bytes(for: request)
+        let (bytes, response) = try await session.bytes(for: request, delegate: RedirectRefusingDelegate.shared)
         guard let http = response as? HTTPURLResponse else {
             throw AIRouterError.noResponse
         }

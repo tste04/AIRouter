@@ -1352,6 +1352,27 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(usage?.input, 7)
         XCTAssertEqual(usage?.output, 3)
     }
+
+    // MARK: - Transport-Sicherheit
+
+    func testTransportDelegateRefusesRedirects() {
+        let url = URL(string: "https://api.example.com/v1")!
+        let task = URLSession.shared.dataTask(with: url) // wird nie gestartet
+        defer { task.cancel() }
+        let redirect = HTTPURLResponse(
+            url: url, statusCode: 302, httpVersion: nil,
+            headerFields: ["Location": "https://attacker.example/"]
+        )!
+        var forwarded: URLRequest? = URLRequest(url: URL(string: "https://attacker.example/")!)
+        RedirectRefusingDelegate.shared.urlSession(
+            URLSession.shared, task: task,
+            willPerformHTTPRedirection: redirect,
+            newRequest: URLRequest(url: URL(string: "https://attacker.example/")!)
+        ) { request in
+            forwarded = request
+        }
+        XCTAssertNil(forwarded, "Redirects werden verweigert — Auth-Header duerfen keinem Hostwechsel folgen")
+    }
 }
 
 // MARK: - Test-Provider & -Storage
