@@ -43,6 +43,7 @@ extension AIRouter {
                     if transientAttempts < retryPolicy.maxTransientRetries {
                         transientAttempts += 1
                         DebugLog.write("[AIRouter] HTTP \(status) fuer \(model) via '\(providerID)' (Retry \(transientAttempts)): \(body.prefix(120))")
+                        emitEvent(.retrying(model: model, attempt: transientAttempts))
                         try await Task.sleep(for: .seconds(Self.backoffDelay(policy: retryPolicy, attempt: transientAttempts)))
                         continue
                     }

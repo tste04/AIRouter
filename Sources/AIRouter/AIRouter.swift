@@ -653,6 +653,7 @@ public actor AIRouter {
                     }
                     if self.hasLocalBackend() {
                         DebugLog.write("[AIRouter] Budget erschoepft fuer \(task.rawValue), Streaming-Fallback zu lokal")
+                        self.emitEvent(.localFallback(task: task.rawValue))
                         do {
                             try await self.streamLocal(model: self.localModelTag, system: system, messages: messages, maxTokens: tokens, options: options, task: task, continuation: continuation)
                             continuation.finish()

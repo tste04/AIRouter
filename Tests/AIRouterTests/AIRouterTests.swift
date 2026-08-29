@@ -201,9 +201,13 @@ final class AIRouterTests: XCTestCase {
             .init(status: 200, body: anthropicBody(text: "fallback"))
         ])
         let router = makeRouter(transport: transport, taskModels: [.factCheck: "claude-opus-4-6"])
+        let events = EventBox()
+        await router.setEventCallback { events.store($0) }
         let result = try await router.send(task: .factCheck, system: "s", user: "u", maxTokens: 100)
         XCTAssertEqual(result, "fallback")
         XCTAssertEqual(transport.requestCount, 2)
+        XCTAssertTrue(events.all.contains(.modelFallback(from: "claude-opus-4-6", to: "claude-sonnet-4-6")),
+                      "Modell-Fallback wird als Event gemeldet")
     }
 
     func testUnknownModelThrows() async {
@@ -1301,6 +1305,8 @@ final class AIRouterTests: XCTestCase {
         let router = makeRouter(transport: transport)
         await router.configureLocalLLM(endpoint: "http://localhost:11434", model: "gemma3")
         await router.setHourlyBudget(10_000)
+        let events = EventBox()
+        await router.setEventCallback { events.store($0) }
         let hugeInput = String(repeating: "x", count: 60_000) // sprengt das Budget
         var chunks: [String] = []
         for try await chunk in await router.sendStreaming(task: .factCheck, system: hugeInput, user: "u") {
@@ -1308,6 +1314,8 @@ final class AIRouterTests: XCTestCase {
         }
         XCTAssertEqual(chunks.joined(), "lokal")
         XCTAssertEqual(transport.requestCount, 1, "Nur der lokale Stream-Request darf rausgehen")
+        XCTAssertTrue(events.all.contains(.localFallback(task: "factCheck")),
+                      "Streaming-Fallback meldet dasselbe Event wie der send-Pfad")
     }
 
     func testResponseCacheEvictsOldestBeyondMaxEntries() async throws {

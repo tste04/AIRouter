@@ -124,6 +124,7 @@ extension AIRouter {
                 let desc = try descriptor(for: currentModel)
                 if let fallback = desc.fallsBackTo, fallback != currentModel, !breakerIsOpen(fallback) {
                     DebugLog.write("[AIRouter] Circuit-Breaker: \(currentModel) gemieden, nutze \(fallback)")
+                    emitEvent(.modelFallback(from: currentModel, to: fallback))
                     currentModel = fallback
                     continue
                 }
@@ -143,6 +144,7 @@ extension AIRouter {
                 // Timeouts/Verbindungsabbrueche sind genauso transient wie 5xx.
                 transientAttempts += 1
                 DebugLog.write("[AIRouter] Transportfehler fuer \(currentModel) (Retry \(transientAttempts)): URLError \(error.code.rawValue)")
+                emitEvent(.retrying(model: currentModel, attempt: transientAttempts))
                 try await Task.sleep(for: .seconds(Self.backoffDelay(policy: retryPolicy, attempt: transientAttempts)))
                 continue
             } catch {
@@ -170,6 +172,7 @@ extension AIRouter {
                 fallbacksVisited.insert(currentModel)
                 if let fallback = descriptor.fallsBackTo, !fallbacksVisited.contains(fallback) {
                     DebugLog.write("[AIRouter] Modell \(currentModel) nicht gefunden, Fallback zu \(fallback)")
+                    emitEvent(.modelFallback(from: currentModel, to: fallback))
                     currentModel = fallback
                     continue
                 }

@@ -14,6 +14,9 @@ public enum RouterEvent: Sendable, Equatable {
     case breakerOpened(model: String)
     /// Circuit-Breaker nach Cooldown wieder geschlossen.
     case breakerClosed(model: String)
+    /// Wechsel auf das Fallback-Modell der Katalog-Kette — bei HTTP 404 oder
+    /// weil der Circuit-Breaker das urspruengliche Modell meidet.
+    case modelFallback(from: String, to: String)
     /// Transienter Fehler, Wiederholungsversuch folgt.
     case retrying(model: String, attempt: Int)
     /// Antwort aus dem Cache bedient — kein Backend-Aufruf.
