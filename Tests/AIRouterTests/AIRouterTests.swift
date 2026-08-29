@@ -16,11 +16,13 @@ final class MockTransport: HTTPTransport, @unchecked Sendable {
     private(set) var requests: [URLRequest] = []
     private let streamLines: [String]
     private let streamStatus: Int
+    private var streamStatuses: [Int]
 
-    init(responses: [Response], streamLines: [String] = [], streamStatus: Int = 200) {
+    init(responses: [Response], streamLines: [String] = [], streamStatus: Int = 200, streamStatuses: [Int] = []) {
         self.responses = responses
         self.streamLines = streamLines
         self.streamStatus = streamStatus
+        self.streamStatuses = streamStatuses
     }
 
     var requestCount: Int {
@@ -35,10 +37,11 @@ final class MockTransport: HTTPTransport, @unchecked Sendable {
         return responses.isEmpty ? Response(status: 500, body: Data()) : responses.removeFirst()
     }
 
-    private func recordStreamRequest(_ request: URLRequest) -> [String] {
+    private func recordStreamRequest(_ request: URLRequest) -> ([String], Int) {
         lock.lock(); defer { lock.unlock() }
         requests.append(request)
-        return streamLines
+        let status = streamStatuses.isEmpty ? streamStatus : streamStatuses.removeFirst()
+        return (streamLines, status)
     }
 
     func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
@@ -48,8 +51,8 @@ final class MockTransport: HTTPTransport, @unchecked Sendable {
     }
 
     func lines(for request: URLRequest) async throws -> (AsyncThrowingStream<String, Error>, HTTPURLResponse) {
-        let lines = recordStreamRequest(request)
-        let http = HTTPURLResponse(url: request.url!, statusCode: streamStatus, httpVersion: nil, headerFields: nil)!
+        let (lines, status) = recordStreamRequest(request)
+        let http = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
         let stream = AsyncThrowingStream<String, Error> { continuation in
             for line in lines { continuation.yield(line) }
             continuation.finish()
@@ -759,6 +762,34 @@ final class AIRouterTests: XCTestCase {
             }
         }
         XCTAssertEqual(transport.requestCount, 1, "kein zweiter Netzaufruf im Flugmodus")
+    }
+
+    func testStreamVertexRefreshesTokenOn401() async throws {
+        let counter = Counter()
+        let lines = [
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hallo\"}]}}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":2}}"
+        ]
+        let transport = MockTransport(responses: [], streamLines: lines, streamStatuses: [401, 200])
+        let router = AIRouter(
+            vertexRegion: "us-central1",
+            vertexProject: "demo",
+            accessTokenProvider: {
+                let n = counter.next()
+                return AccessToken(value: "tok-\(n)", lifetime: 3600)
+            },
+            transport: transport
+        )
+        var text = ""
+        for try await chunk in await router.sendStreaming(task: .factCheck, system: "s", user: "u") {
+            text += chunk
+        }
+        XCTAssertEqual(text, "Hallo")
+        XCTAssertEqual(transport.requestCount, 2, "401 -> Token-Refresh -> zweiter Versuch")
+        XCTAssertNotEqual(
+            transport.requests.first?.value(forHTTPHeaderField: "Authorization"),
+            transport.requests.last?.value(forHTTPHeaderField: "Authorization"),
+            "zweiter Versuch nutzt ein frisches Token"
+        )
     }
 
     func testLocalEndpointPlainHTTPOnlyToPrivateHosts() async {

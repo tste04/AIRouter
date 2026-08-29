@@ -206,6 +206,37 @@ extension AIRouter {
         }
     }
 
+    /// Oeffnet den SSE-Stream. Ein 401 wird wie im synchronen Pfad einmal per
+    /// Token-Refresh wiederholt — ein gerade abgelaufenes Cache-Token darf den
+    /// Stream nicht hart scheitern lassen.
+    func openVertexStream(model: String, provider: ModelDescriptor.Provider, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions) async throws -> AsyncThrowingStream<String, Error> {
+        var tokenRefreshed = false
+        while true {
+            let request = try await vertexRequest(model: model, provider: provider, streaming: true, system: system, messages: messages, maxTokens: maxTokens, options: options)
+            let (lines, http): (AsyncThrowingStream<String, Error>, HTTPURLResponse)
+            do {
+                (lines, http) = try await transport.lines(for: request)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                recordFailure(model)
+                throw error
+            }
+            switch http.statusCode {
+            case 200...299:
+                return lines
+            case 401 where !tokenRefreshed:
+                invalidateToken()
+                tokenRefreshed = true
+            case 429, 500...599:
+                recordFailure(model)
+                throw AIRouterError.apiError(http.statusCode, "Streaming-Request fehlgeschlagen")
+            default:
+                throw AIRouterError.apiError(http.statusCode, "Streaming-Request fehlgeschlagen")
+            }
+        }
+    }
+
     /// Natives Cloud-Streaming via SSE. Liefert die gemeldeten Token-Zaehler;
     /// fehlt der Output-Zaehler, wird grob aus der Zeichenzahl geschaetzt.
     func streamVertex(model: String, system: String, messages: [AIMessage], maxTokens: Int, options: GenerationOptions, task: AITask?, continuation: AsyncThrowingStream<String, Error>.Continuation) async throws -> (input: Int, output: Int) {
@@ -227,25 +258,9 @@ extension AIRouter {
 
         let (outboundSystem, outboundMessages) = preflightedOutbound(system: system, messages: messages)
 
-        let request = try await vertexRequest(model: model, provider: desc.provider, streaming: true, system: outboundSystem, messages: outboundMessages, maxTokens: maxTokens, options: options)
-
         let clock = ContinuousClock()
         let start = clock.now
-        let (lines, http): (AsyncThrowingStream<String, Error>, HTTPURLResponse)
-        do {
-            (lines, http) = try await transport.lines(for: request)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            recordFailure(model)
-            throw error
-        }
-        guard (200...299).contains(http.statusCode) else {
-            if http.statusCode == 429 || (500...599).contains(http.statusCode) {
-                recordFailure(model)
-            }
-            throw AIRouterError.apiError(http.statusCode, "Streaming-Request fehlgeschlagen")
-        }
+        let lines = try await openVertexStream(model: model, provider: desc.provider, system: outboundSystem, messages: outboundMessages, maxTokens: maxTokens, options: options)
 
         var inputTokens = 0
         var outputTokens = 0
