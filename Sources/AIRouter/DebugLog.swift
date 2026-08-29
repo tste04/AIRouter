@@ -45,11 +45,25 @@ public enum DebugLog {
         lock.unlock()
     }
 
+    /// Ersetzt Steuerzeichen durch Leerzeichen. Teile der Nachrichten sind
+    /// server-kontrolliert (Fehler-Body-Auszuege, entdeckte Modellnamen) —
+    /// eingebettete Zeilenumbrueche koennten sonst Logzeilen faelschen und
+    /// ANSI-Escapes beim Betrachten der Datei Terminal-Tricks ausfuehren.
+    static func sanitized(_ msg: String) -> String {
+        var view = String.UnicodeScalarView()
+        for scalar in msg.unicodeScalars {
+            view.append(scalar.value < 0x20 || scalar.value == 0x7F ? " " : scalar)
+        }
+        return String(view)
+    }
+
     public static func write(_ msg: String) {
         lock.lock()
         let isEnabled = enabled
         lock.unlock()
         guard isEnabled else { return }
+
+        let msg = sanitized(msg)
 
         // .private: Log-Inhalte (Endpoints, Fehler-Auszuege) erscheinen im
         // Unified Log nur geschwaerzt; Klartext gibt es gezielt via Datei-Log.

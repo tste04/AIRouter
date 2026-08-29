@@ -1451,6 +1451,15 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(buffer.flush(), "rest")
         XCTAssertNil(buffer.flush())
     }
+
+    func testDebugLogSanitizesControlCharacters() {
+        let forged = "ok\n2026-01-01: [AIRouter] gefaelschte Zeile\u{1B}[31mrot\r"
+        let clean = DebugLog.sanitized(forged)
+        XCTAssertFalse(clean.contains("\n"), "Zeilenumbrueche koennen keine Logzeilen faelschen")
+        XCTAssertFalse(clean.contains("\u{1B}"), "ANSI-Escapes werden entfernt")
+        XCTAssertFalse(clean.contains("\r"))
+        XCTAssertTrue(clean.contains("ok") && clean.contains("rot"), "Nutzinhalt bleibt erhalten")
+    }
 }
 
 // MARK: - Test-Provider & -Storage
