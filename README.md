@@ -398,9 +398,10 @@ strikte Allowlists:
   `example.com:project` bleibt möglich).
 - **Modellnamen**: Buchstaben, Ziffern, `-`, `.`, `_`, `@` — kein `/`, keine
   Pfad-Injection über `additionalModels`/`taskModels`.
-- **Lokale Endpoints** (`configureLocalLLM`): nur `http`/`https` mit Host;
-  ungültige Endpoints (z. B. `file://`) werden verworfen und aktivieren die
-  lokale Inferenz nicht.
+- **Lokale Endpoints** (`configureLocalLLM`): nur `http`/`https` mit Host, und
+  `http://` (Klartext) nur zu Loopback-/privaten Hosts — dieselbe Regel wie für
+  Cloud-Provider, mit demselben `allowInsecureHTTP`-Opt-in. Ungültige Endpoints
+  (z. B. `file://`) werden verworfen und aktivieren die lokale Inferenz nicht.
 
 Weitere Härtungen:
 
@@ -418,6 +419,13 @@ Weitere Härtungen:
   für Loopback-/private Hosts (explizites Opt-out via `allowInsecureHTTP`).
 - **Response-Größenlimit**: Der Standard-Transport kappt Antworten bei 50 MB
   (konfigurierbar) — kein Speicher-DoS durch defekte/kompromittierte Endpoints.
+  Beim Streaming zählt jedes empfangene Byte, auch ohne Zeilenumbruch; der
+  Antwort-Cache hat zusätzlich ein eigenes Byte-Budget (Default 8 MB).
+- **Keine Redirects**: Der Standard-Transport verweigert 3xx-Weiterleitungen —
+  `Authorization`/`x-api-key` können keinem Hostwechsel folgen.
+- **Log-Hygiene**: Steuerzeichen in Log-Nachrichten (etwa aus server-
+  kontrollierten Fehler-Bodies) werden ersetzt — keine gefälschten Logzeilen,
+  keine ANSI-Escapes im Datei-Log.
 
 Details und Meldeweg für Schwachstellen: [SECURITY.md](SECURITY.md).
 

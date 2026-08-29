@@ -45,9 +45,13 @@ Release getaggt ist. Bis dahin sammelt `Unreleased` den Stand von `main`.
   Cloud-Aufrufe, Latenz-/Fehler-Statistik (`modelStats()`).
 - Kosten-Telemetrie aus Katalog-Preisen (`AIUsageInfo.costUSD`,
   `BudgetStatus.costUSD`) und PII-Preflight-Hook (`setCloudPreflight`).
-- Event-Hook `setEventCallback(_:)`: Fallbacks, Budget-Drosselung,
-  Breaker-Zustandswechsel, Retries und Cache-Treffer als typisierte
-  `RouterEvent`-Werte.
+- Event-Hook `setEventCallback(_:)`: Fallbacks (inkl. Modell-Fallback via
+  `modelFallback(from:to:)`), Budget-Drosselung, Breaker-Zustandswechsel,
+  Retries und Cache-Treffer als typisierte `RouterEvent`-Werte — auf allen
+  Pfaden, auch Streaming und Custom-Provider.
+- 401-Token-Refresh auch im Vertex-Streaming-Pfad (wie im synchronen Pfad).
+- `configureStorage` prueft Snapshots gegen das konfigurierte Budget-Fenster
+  statt gegen fixe 3600 s.
 - `resetModelStats()`; `localEndpoint`-Property (ersetzt das deprecatede
   `localLLMEndpointValue()`).
 - DocC-Katalog mit Artikeln zu Routing sowie Budgets und Kosten.
@@ -56,8 +60,18 @@ Release getaggt ist. Bis dahin sammelt `Unreleased` den Stand von `main`.
 - Allowlist-Validierung für Region/Projekt/Modellnamen und lokale Endpoints;
   `http://` für Cloud-Provider nur zu Loopback-/privaten Hosts (echte
   IPv4-Prüfung, keine Präfix-Heuristik).
-- Response-Größenlimit (50 MB) für Daten- und Streaming-Transport; Fehler-Bodies
+- Response-Größenlimit (50 MB) für Daten- und Streaming-Transport — beim
+  Streaming zählt jedes empfangene Byte, auch ohne Zeilenumbruch; Fehler-Bodies
   auf 500 Zeichen gekappt; Datei-Logs `0600`; monotone Budget-Uhr.
+- Standard-Transport verweigert HTTP-Redirects — Auth-Header können keinem
+  Hostwechsel folgen.
+- Klartext-`http://` auch für lokale Endpoints nur zu Loopback-/privaten Hosts
+  (Opt-in via `allowInsecureHTTP` in `configureLocalLLM`).
+- Offline-Zusage gilt auch für Aufrufe, die in der Budget-Warteschlange geparkt
+  waren; `maxTokens` wird auf ≥ 1 geklemmt (kein Budget-Bypass über negative
+  Werte); Settle schätzt Tokens, wenn das Backend keine Usage meldet.
+- Antwort-Cache mit Byte-Budget (Default 8 MB, `maxBytes` in
+  `enableResponseCache`); Log-Nachrichten ohne Steuerzeichen (Log-Injection).
 
 ### Infrastruktur
 - CI (GitHub Actions): macOS-Build + Tests (komplett mock-basiert, ohne Netz)
