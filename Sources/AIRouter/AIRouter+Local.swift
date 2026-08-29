@@ -70,7 +70,7 @@ extension AIRouter {
         }
         // Defense in depth: configureLocalLLM validiert bereits, hier erneut
         // pruefen, falls der Endpoint auf anderem Weg gesetzt wurde.
-        guard let base = RouterValidation.validatedLocalEndpoint(localLLMEndpoint),
+        guard let base = RouterValidation.validatedCloudBase(localLLMEndpoint, allowInsecureHTTP: localAllowInsecureHTTP),
               let url = URL(string: "\(base)\(path)") else {
             throw AIRouterError.invalidEndpoint
         }

@@ -95,6 +95,8 @@ public actor AIRouter {
     var localLLMEndpoint: String = ""
     var localLLMModel: String = ""
     var localLLMNumCtx: Int = 4096
+    /// Explizites Opt-in aus configureLocalLLM: http:// auch zu nicht-privaten Hosts.
+    var localAllowInsecureHTTP = false
     let localLLMKeepAlive: String = "24h"
     var airplaneMode: Bool = false
     var energyMode: EnergyMode = .fullPower
@@ -246,17 +248,19 @@ public actor AIRouter {
     // MARK: - Configuration
 
     /// Konfiguriert das Ollama-Backend. Liefert `true`, wenn ein gueltiger
-    /// Endpoint uebernommen wurde; `false` bei verworfenem Endpoint (nur
-    /// http/https mit Host erlaubt) oder wenn ein neuerer Aufruf zuvorkam.
+    /// Endpoint uebernommen wurde; `false` bei verworfenem Endpoint oder wenn
+    /// ein neuerer Aufruf zuvorkam. Es gilt dieselbe Regel wie fuer
+    /// Cloud-Provider: nur `http`/`https` mit Host, und `http://` (Klartext)
+    /// nur zu Loopback-/privaten Hosts — ueber einen "lokalen" Endpoint laufen
+    /// komplette Prompts, sie duerfen nicht unbemerkt unverschluesselt an einen
+    /// entfernten Host gehen. `allowInsecureHTTP` hebt die Regel explizit auf.
     @discardableResult
-    public func configureLocalLLM(endpoint: String, model: String, numCtx: Int = 4096) async -> Bool {
-        // Nur http/https mit Host akzeptieren — verhindert, dass ein fehlerhaft
-        // oder boeswillig konfigurierter "lokaler" Endpoint Prompts an ein
-        // unerwartetes Ziel (file://, fehlgeformte URL, ...) leitet.
-        let validated = RouterValidation.validatedLocalEndpoint(endpoint)
+    public func configureLocalLLM(endpoint: String, model: String, numCtx: Int = 4096, allowInsecureHTTP: Bool = false) async -> Bool {
+        let validated = RouterValidation.validatedCloudBase(endpoint, allowInsecureHTTP: allowInsecureHTTP)
         if !endpoint.isEmpty && validated == nil {
-            DebugLog.write("[AIRouter] Ungueltiger lokaler Endpoint verworfen (erlaubt: http/https mit Host)")
+            DebugLog.write("[AIRouter] Ungueltiger lokaler Endpoint verworfen (http/https mit Host; http nur zu Loopback/privaten Hosts)")
         }
+        localAllowInsecureHTTP = allowInsecureHTTP
         localConfigGeneration += 1
         let generation = localConfigGeneration
         let sanitizedEndpoint = validated ?? ""

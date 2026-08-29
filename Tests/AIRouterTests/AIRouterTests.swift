@@ -736,6 +736,21 @@ final class AIRouterTests: XCTestCase {
         XCTAssertEqual(transport.requestCount, 1, "kein zweiter Netzaufruf im Flugmodus")
     }
 
+    func testLocalEndpointPlainHTTPOnlyToPrivateHosts() async {
+        let router = makeRouter(transport: MockTransport(responses: []))
+        let publicHTTP = await router.configureLocalLLM(endpoint: "http://public.example.com:11434", model: "m")
+        XCTAssertFalse(publicHTTP, "Klartext-http zu einem oeffentlichen Host wird verworfen")
+
+        let optIn = await router.configureLocalLLM(endpoint: "http://public.example.com:11434", model: "m", allowInsecureHTTP: true)
+        XCTAssertTrue(optIn, "explizites Opt-in erlaubt die Ausnahme")
+
+        let https = await router.configureLocalLLM(endpoint: "https://ollama.example.com", model: "m")
+        XCTAssertTrue(https, "https bleibt zu jedem Host erlaubt")
+
+        let loopback = await router.configureLocalLLM(endpoint: "http://127.0.0.1:11434", model: "m")
+        XCTAssertTrue(loopback)
+    }
+
     func testResponseCacheEvictsOnByteBudget() async throws {
         let bigA = String(repeating: "a", count: 700)
         let bigB = String(repeating: "b", count: 700)
